@@ -95,7 +95,8 @@ k = 2
 neighborhoods = build_neighborhood(
     matrix,
     test_matrix,
-    k
+    k,
+    return_scores=True
 )
 
 
