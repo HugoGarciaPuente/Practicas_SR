@@ -1,1 +1,170 @@
+import json
+from collections import defaultdict
+from scipy.sparse import load_npz
 
+NEIGHBORHOOD_PATH = "neighborhood_item.json"
+TEST_MATRIX_PATH = "test_matrix.npz"
+
+TRACK_TO_COL_PATH = "track_to_col.json"
+TRACK_TO_COL_TEST_PATH = "track_to_col_test.json"
+
+OUTPUT_PATH = "recommendations_item.json"
+
+TOP_K = 5
+
+
+# -----------------------------
+# Cargar vecindario
+# -----------------------------
+with open(NEIGHBORHOOD_PATH, "r", encoding="utf-8") as f:
+    item_neighbors = json.load(f)
+
+print("Vecindarios cargados:", len(item_neighbors))
+
+
+# -----------------------------
+# Cargar mappings
+# -----------------------------
+with open(TRACK_TO_COL_PATH, "r", encoding="utf-8") as f:
+    track_to_col = json.load(f)
+
+with open(TRACK_TO_COL_TEST_PATH, "r", encoding="utf-8") as f:
+    track_to_col_test = json.load(f)
+
+col_to_track = {v: k for k, v in track_to_col.items()}
+col_to_track_test = {v: k for k, v in track_to_col_test.items()}
+
+print("Tracks training:", len(track_to_col))
+print("Tracks test:", len(track_to_col_test))
+
+
+# -----------------------------
+# Calcular canciones populares
+# -----------------------------
+print("\nCalculando canciones populares...")
+
+popularity = defaultdict(int)
+
+for uri in track_to_col.keys():
+    popularity[uri] += 1
+
+popular_tracks = sorted(
+    popularity.items(),
+    key=lambda x: x[1],
+    reverse=True
+)
+
+popular_uris = [uri for uri, _ in popular_tracks[:TOP_K]]
+
+print("Top populares:", popular_uris)
+
+
+# -----------------------------
+# Cargar matriz de test
+# -----------------------------
+test_matrix = load_npz(TEST_MATRIX_PATH).tocsr()
+
+print("Shape matriz test:", test_matrix.shape)
+
+n_playlists = test_matrix.shape[0]
+
+
+# -----------------------------
+# Contadores diagnóstico
+# -----------------------------
+total_tracks_test = 0
+tracks_found_in_train = 0
+tracks_with_neighbors = 0
+
+
+# -----------------------------
+# Generar recomendaciones
+# -----------------------------
+recommendations = []
+
+for pid in range(n_playlists):
+
+    try:
+
+        row = test_matrix.getrow(pid)
+
+        present_uris = set()
+
+        for test_id in row.indices:
+
+            total_tracks_test += 1
+
+            uri = col_to_track_test.get(test_id)
+
+            if uri is None:
+                continue
+
+            tracks_found_in_train += 1
+            present_uris.add(uri)
+
+        scores = defaultdict(float)
+
+        # recorrer canciones de la playlist
+        for uri in present_uris:
+
+            neighbors = item_neighbors.get(uri)
+
+            if neighbors is None:
+                continue
+
+            tracks_with_neighbors += 1
+
+            for neighbor_uri, similarity in neighbors:
+
+                if neighbor_uri == uri:
+                    continue
+
+                scores[neighbor_uri] += similarity
+
+        # eliminar canciones ya presentes
+        ranked = [
+            (track, score)
+            for track, score in scores.items()
+            if track not in present_uris
+        ]
+
+        ranked = sorted(
+            ranked,
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        rec_uris = [uri for uri, _ in ranked[:TOP_K]]
+
+        # fallback si no hay recomendaciones
+        if len(rec_uris) == 0:
+            rec_uris = popular_uris
+
+    except Exception as e:
+
+        print("Error en playlist", pid, ":", e)
+
+        rec_uris = popular_uris
+
+    recommendations.append({
+        "pid": pid,
+        "recommendations": rec_uris
+    })
+
+
+# -----------------------------
+# Guardar recomendaciones
+# -----------------------------
+with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+    json.dump(recommendations, f, indent=2)
+
+
+# -----------------------------
+# Diagnóstico final
+# -----------------------------
+print("\n--- DIAGNÓSTICO ---")
+
+print("Tracks totales en test:", total_tracks_test)
+print("Tracks encontrados en training:", tracks_found_in_train)
+print("Tracks con vecindario:", tracks_with_neighbors)
+print("Total playlists procesadas:", n_playlists)
