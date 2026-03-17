@@ -1,134 +1,159 @@
-
 import json
 import numpy as np
+import scipy.sparse as sp
 from scipy.sparse import load_npz
 
 TRAIN_MATRIX_PATH = "playlist_track_matrix.npz"
-TEST_MATRIX_PATH = "test_matrix.npz"
+TRACK_TO_COL_PATH = "track_to_col.json"
+TRACK_TO_COL_TEST_PATH = "track_to_col_test.json"
 OUTPUT_PATH = "neighborhood_item.json"
 
-def build_item_neighborhood(
-    train_matrix,
-    test_matrix,
-    k=50,
-    verbose=True
-):
-    """
-    Item-based vecindario pra test.
+# Número de vecinos a guardar por canción
+K_NEIGHBORS = 150
 
-    Pra cada playlist do test:
-        - toma as suas cancions
-        - calcula similitud coseno contra canciones del train
-        - devolve top-k cancions mas similares
-          (excluyendo as presentes)
 
-    Devolve:
-        { pid: [(track_index, score), ...] }
+def build_item_neighborhood(train_matrix, track_to_col, track_to_col_test, k=K_NEIGHBORS):
     """
+    Construye un vecindario item-based usando similitud coseno.
+
+    Para cada canción del conjunto test que también aparece en train,
+    calcula las k canciones más similares del training usando:
+
+        sim(i, j) = (r_i · r_j) / (||r_i|| * ||r_j||)
+
+    donde r_i es el vector de co-ocurrencia de la canción i en playlists.
+
+    Parámetros
+    ----------
+    train_matrix : sp.csr_matrix, shape (n_playlists, n_tracks_train)
+        Matriz binaria playlist × canción del training.
+    track_to_col : dict
+        Mapeo URI → índice de columna en train_matrix.
+    track_to_col_test : dict
+        Mapeo URI → índice de columna en test_matrix.
+    k : int
+        Tamaño del vecindario.
+
+    Devuelve
+    --------
+    neighborhoods : dict
+        { track_uri: [ (neighbor_uri, similitud), ... ] }
+    """
+
+    print("=== BUILD ITEM NEIGHBORHOOD ===")
+
+    # Invertir mapping para recuperar URI a partir del índice
+    col_to_track = {v: k_uri for k_uri, v in track_to_col.items()}
+
+    # Canciones del test
+    test_uris = set(track_to_col_test.keys())
+
+    # Sólo calculamos vecindario para canciones test que existen en train
+    common_tracks = [
+        track_to_col[uri]
+        for uri in test_uris
+        if uri in track_to_col
+    ]
+
+    print(f"Tracks en test:                {len(test_uris)}")
+    print(f"Tracks test presentes en train: {len(common_tracks)}")
+
+    # ------------------------------------------------------------------
+    # Normalización para similitud coseno
+    #
+    # Como la matriz es binaria (0/1), la norma L2 de la columna j es:
+    #   ||r_j|| = sqrt( sum_u r_{u,j}^2 ) = sqrt( getnnz(col=j) )
+    #
+    # Guardamos también las normas para poder dividir por ||r_i||
+    # (la canción query) — esto es el fix del denominador.
+    # ------------------------------------------------------------------
+    track_popularity = train_matrix.getnnz(axis=0)   # shape (n_tracks,)
+    norms = np.sqrt(track_popularity.astype(float))
+    norms[norms == 0] = 1.0                           # evitar división por cero
+
+    inv_norms = 1.0 / norms
+    Inv_D = sp.diags(inv_norms)   # matriz diagonal (n_tracks × n_tracks)
+
+    # Traspuesta en CSR para acceso eficiente a filas (track → playlists)
+    M_T = train_matrix.T.tocsr()   # shape (n_tracks, n_playlists)
+
+    print(f"Calculando vecindarios (k={k})...")
 
     neighborhoods = {}
 
-    n_train_playlists, n_tracks = train_matrix.shape
+    for idx, track_id in enumerate(common_tracks):
 
-    if verbose:
-        print("=== ITEM-BASED NEIGHBORHOOD ===")
-        print("Train matrix shape:", train_matrix.shape)
-        print("Test matrix shape:", test_matrix.shape)
-        print("Total tracks:", n_tracks)
-        print()
+        if idx % 5000 == 0:
+            print(f"  Procesadas {idx}/{len(common_tracks)} canciones...")
 
-    # Precomputamos norma L2 de cada track (columna)
-    if verbose:
-        print("Calculando normas de tracks (train)...")
+        # Vector de la canción query: shape (1, n_playlists)
+        vec = M_T[track_id]
 
-    track_popularity = train_matrix.getnnz(axis=0)
-    track_norms = np.sqrt(track_popularity)
+        # --- NUMERADOR ---
+        # scores[j] = r_i · r_j  para toda canción j
+        # shape: (1, n_tracks)
+        scores = vec.dot(train_matrix)
 
-    if verbose:
-        print("Normas calculadas.")
-        print()
+        # --- DENOMINADOR: dividir por ||r_j|| para todos los j ---
+        scores = scores.dot(Inv_D)
 
-    # Iteramos sobre playlists de test no vacías
-    test_nnz = test_matrix.getnnz(axis=1)
-    non_empty_rows = np.where(test_nnz > 0)[0]
+        # --- FIX: dividir también por ||r_i|| (norma de la canción query) ---
+        # Sin esto la similitud coseno queda sin normalizar por un lado
+        scores = scores / norms[track_id]
 
-    if verbose:
-        print("Playlists test no vacías:", len(non_empty_rows))
-        print()
+        scores = scores.toarray().ravel()
 
-    for count, pid in enumerate(non_empty_rows):
+        # La similitud de una canción consigo misma no es útil
+        scores[track_id] = 0.0
 
-        if verbose and count % 100 == 0:
-            print(f"Procesando playlist {count}/{len(non_empty_rows)}")
-
-        test_row = test_matrix.getrow(pid)
-        test_tracks = test_row.indices
-
-        # Conjunto para exclusión
-        test_track_set = set(test_tracks)
-
-        # Scores acumulados para tracks candidatos
-        scores = {}
-
-        # Para cada track presente en la playlist test
-        for track_j in test_tracks:
-
-            # Playlists del train donde aparece track_j
-            train_playlists = train_matrix[:, track_j].nonzero()[0]
-
-            # Submatriz restringida a esas playlists
-            submatrix = train_matrix[train_playlists]
-
-            # Intersección con todas las canciones
-            cooccurrence = submatrix.sum(axis=0).A1
-
-            # Similitud coseno binaria
-            denom = track_norms * track_norms[track_j]
-            mask = denom > 0
-            sims = np.zeros_like(cooccurrence, dtype=float)
-            sims[mask] = cooccurrence[mask] / denom[mask]
-
-            # Acumulamos scores
-            for track_i in np.where(sims > 0)[0]:
-                if track_i not in test_track_set:
-                    scores[track_i] = scores.get(track_i, 0) + sims[track_i]
-
-        if len(scores) == 0:
-            neighborhoods[str(pid)] = []
+        if scores.max() == 0:
             continue
 
-        # Top-k por score acumulado
-        sorted_items = sorted(
-            scores.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )[:k]
+        # Top-k vecinos (argpartition es O(n) en vez de O(n log n))
+        n_non_zero = np.count_nonzero(scores)
+        current_k = min(k, n_non_zero)
 
-        neighborhoods[str(pid)] = [
-            (int(track), float(score))
-            for track, score in sorted_items
-        ]
+        if current_k == 0:
+            continue
 
-    if verbose:
-        print()
-        print("Vecindario item-based completado.")
+        top_idx = np.argpartition(-scores, current_k)[:current_k]
+        top_idx = top_idx[np.argsort(-scores[top_idx])]
 
+        track_uri = col_to_track[track_id]
+
+        neighbors = []
+        for t in top_idx:
+            uri = col_to_track.get(int(t))
+            if uri is None:
+                continue
+            neighbors.append((uri, float(scores[t])))
+
+        neighborhoods[track_uri] = neighbors
+
+    print(f"Vecindarios calculados: {len(neighborhoods)}")
     return neighborhoods
 
 
-# EJECUCIÓN
+if __name__ == "__main__":
 
-train_matrix = load_npz(TRAIN_MATRIX_PATH)
-test_matrix = load_npz(TEST_MATRIX_PATH)
+    print("Cargando training matrix...")
+    train_matrix = load_npz(TRAIN_MATRIX_PATH).tocsr()
+    print(f"  Shape: {train_matrix.shape}")
 
-item_neighborhoods = build_item_neighborhood(
-    train_matrix,
-    test_matrix,
-    k=50,
-    verbose=True
-)
+    with open(TRACK_TO_COL_PATH) as f:
+        track_to_col = json.load(f)
 
-with open(OUTPUT_PATH, "w") as f:
-    json.dump(item_neighborhoods, f)
+    with open(TRACK_TO_COL_TEST_PATH) as f:
+        track_to_col_test = json.load(f)
 
-print("Guardado en:", OUTPUT_PATH)
+    item_neighborhoods = build_item_neighborhood(
+        train_matrix,
+        track_to_col,
+        track_to_col_test,
+        k=K_NEIGHBORS
+    )
+
+    with open(OUTPUT_PATH, "w") as f:
+        json.dump(item_neighborhoods, f)
+
+    print(f"Vecindarios guardados en: {OUTPUT_PATH}")
