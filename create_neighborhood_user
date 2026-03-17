@@ -1,0 +1,186 @@
+import json
+import numpy as np
+import scipy.sparse as sp
+from scipy.sparse import load_npz, save_npz
+
+TRAIN_MATRIX_PATH      = "playlist_track_matrix.npz"
+TEST_MATRIX_PATH       = "test_matrix.npz"
+TRACK_TO_COL_PATH      = "track_to_col.json"
+TRACK_TO_COL_TEST_PATH = "track_to_col_test.json"
+OUTPUT_PATH            = "neighborhood_user.json"
+
+K_NEIGHBORS = 150   # número de playlists vecinas por playlist test
+
+
+def build_user_neighborhood(train_matrix, test_matrix,
+                            track_to_col, track_to_col_test,
+                            k=K_NEIGHBORS):
+    """
+    Construye un vecindario user-based (playlist-based) usando similitud coseno.
+
+    Para cada playlist del test, encuentra las k playlists de training más
+    similares usando:
+
+        sim(u, v) = (r_u · r_v) / (||r_u|| * ||r_v||)
+
+    donde r_u / r_v son vectores binarios de presencia de tracks.
+
+    El reto es que test y train tienen columnas (tracks) distintas.
+    Solución: proyectar ambas matrices al espacio común de tracks
+    que aparecen en los dos mappings.
+
+    Parámetros
+    ----------
+    train_matrix : sp.csr_matrix  (n_train_playlists × n_train_tracks)
+    test_matrix  : sp.csr_matrix  (n_test_playlists  × n_test_tracks)
+    track_to_col      : dict  URI → col en train_matrix
+    track_to_col_test : dict  URI → col en test_matrix
+    k : int  tamaño del vecindario
+
+    Devuelve
+    --------
+    neighborhoods : dict
+        { str(test_pid): [ (train_pid, similitud), ... ] }
+        (las claves son strings porque JSON no admite claves int)
+    """
+
+    print("=== BUILD USER NEIGHBORHOOD ===")
+
+    n_train = train_matrix.shape[0]
+    n_test  = test_matrix.shape[0]
+    print(f"Playlists train: {n_train}  |  Playlists test: {n_test}")
+
+    # ------------------------------------------------------------------
+    # 1. Espacio común: tracks presentes en AMBOS mappings
+    #
+    #    Construimos dos listas paralelas de índices:
+    #      train_cols[i]  →  columna en train_matrix
+    #      test_cols[i]   →  columna en test_matrix
+    #    para el mismo URI.
+    # ------------------------------------------------------------------
+    common_uris = set(track_to_col.keys()) & set(track_to_col_test.keys())
+    print(f"Tracks en train: {len(track_to_col)}  |  "
+          f"Tracks en test: {len(track_to_col_test)}  |  "
+          f"Tracks comunes: {len(common_uris)}")
+
+    # Ordenamos para tener un mapeo estable
+    common_uris = sorted(common_uris)
+    n_common = len(common_uris)
+
+    train_cols = np.array([track_to_col[uri]      for uri in common_uris], dtype=np.int32)
+    test_cols  = np.array([track_to_col_test[uri] for uri in common_uris], dtype=np.int32)
+
+    # ------------------------------------------------------------------
+    # 2. Proyectar train_matrix al espacio común
+    #
+    #    train_common[u, j] = train_matrix[u, train_cols[j]]
+    #    → seleccionamos sólo las columnas comunes y las reindexamos
+    # ------------------------------------------------------------------
+    print("Proyectando matrices al espacio común...")
+
+    train_common = train_matrix[:, train_cols].tocsr()  # (n_train, n_common)
+    test_common  = test_matrix[:, test_cols].tocsr()    # (n_test,  n_common)
+
+    # ------------------------------------------------------------------
+    # 3. Normalizar filas (norma L2) para obtener similitud coseno
+    #
+    #    norm_u = ||r_u||  (longitud del vector de la playlist en espacio común)
+    #    Si una playlist no comparte ningún track común, norma = 0 → la dejamos
+    #    en 1 para evitar división por cero (su similitud quedará 0 de todas formas).
+    # ------------------------------------------------------------------
+    def normalize_rows(matrix):
+        """Devuelve la matriz con filas normalizadas a norma L2 = 1."""
+        norms = np.sqrt(matrix.power(2).sum(axis=1)).A1   # (n_rows,)
+        norms[norms == 0] = 1.0
+        inv_norms = 1.0 / norms
+        Inv_D = sp.diags(inv_norms)
+        return Inv_D.dot(matrix)
+
+    train_norm = normalize_rows(train_common)   # (n_train, n_common)
+    test_norm  = normalize_rows(test_common)    # (n_test,  n_common)
+
+    # ------------------------------------------------------------------
+    # 4. Calcular similitudes y construir vecindarios
+    #
+    #    sim_matrix = test_norm × train_norm.T   → (n_test, n_train)
+    #
+    #    Para datasets grandes esto puede ser costoso en memoria si se
+    #    hace todo a la vez. Lo hacemos en bloques de BLOCK_SIZE playlists
+    #    test para controlar el uso de RAM.
+    # ------------------------------------------------------------------
+    BLOCK_SIZE = 100   # playlists test procesadas a la vez
+
+    neighborhoods = {}
+
+    train_norm_T = train_norm.T.tocsr()   # (n_common, n_train) — para producto eficiente
+
+    for start in range(0, n_test, BLOCK_SIZE):
+
+        end = min(start + BLOCK_SIZE, n_test)
+
+        if start % 2000 == 0:
+            print(f"  Procesadas {start}/{n_test} playlists test...")
+
+        # Bloque de playlists test: (block_size, n_common)
+        block = test_norm[start:end]
+
+        # Similitudes: (block_size, n_train)
+        sim_block = block.dot(train_norm_T).toarray().astype(np.float32)
+
+        for local_idx in range(sim_block.shape[0]):
+
+            test_pid = start + local_idx
+            sims = sim_block[local_idx]   # (n_train,)
+
+            # Top-k playlists de training
+            if sims.max() == 0:
+                # Esta playlist test no comparte ningún track con el training
+                neighborhoods[str(test_pid)] = []
+                continue
+
+            n_non_zero = np.count_nonzero(sims)
+            current_k = min(k, n_non_zero)
+
+            if current_k == 0:
+                neighborhoods[str(test_pid)] = []
+                continue
+
+            top_idx = np.argpartition(-sims, current_k)[:current_k]
+            top_idx = top_idx[np.argsort(-sims[top_idx])]
+
+            neighbors = [
+                (int(train_pid), float(sims[train_pid]))
+                for train_pid in top_idx
+                if sims[train_pid] > 0
+            ]
+
+            neighborhoods[str(test_pid)] = neighbors
+
+    print(f"Vecindarios calculados: {len(neighborhoods)}")
+    return neighborhoods
+
+
+if __name__ == "__main__":
+
+    print("Cargando matrices...")
+    train_matrix = load_npz(TRAIN_MATRIX_PATH).tocsr()
+    test_matrix  = load_npz(TEST_MATRIX_PATH).tocsr()
+    print(f"  Train shape: {train_matrix.shape}")
+    print(f"  Test shape:  {test_matrix.shape}")
+
+    with open(TRACK_TO_COL_PATH) as f:
+        track_to_col = json.load(f)
+
+    with open(TRACK_TO_COL_TEST_PATH) as f:
+        track_to_col_test = json.load(f)
+
+    user_neighborhoods = build_user_neighborhood(
+        train_matrix, test_matrix,
+        track_to_col, track_to_col_test,
+        k=K_NEIGHBORS
+    )
+
+    with open(OUTPUT_PATH, "w") as f:
+        json.dump(user_neighborhoods, f)
+
+    print(f"Vecindarios guardados en: {OUTPUT_PATH}")
