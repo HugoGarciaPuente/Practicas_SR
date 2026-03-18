@@ -1,108 +1,137 @@
-
 import json
 import numpy as np
-
+import scipy.sparse as sp
 from scipy.sparse import load_npz
-from scipy.sparse import csr_matrix
-
-
 
 TRAIN_MATRIX_PATH = "playlist_track_matrix.npz"
 TEST_MATRIX_PATH = "test_matrix.npz"
-TRACK_MAP_PATH = "track_to_col.json"
-TRACK_MAP_TEST_PATH = "track_to_col_test.json"
 OUTPUT_PATH = "neighborhood_user.json"
 
+# Número de vecinos a guardar por playlist
+K_NEIGHBORS = 150
 
 
-matrix = load_npz(TRAIN_MATRIX_PATH)
-test_matrix = load_npz(TEST_MATRIX_PATH)
-
-with open(TRACK_MAP_PATH, "r") as f:
-    track_to_col = json.load(f)
-
-with open(TRACK_MAP_TEST_PATH, "r") as f:
-    track_to_col_test = json.load(f)
-
-
-
-def build_neighborhood(
-    train_matrix,
-    test_matrix,
-    k,
-    return_scores=False,
-    verbose=False
-):
+def build_user_neighborhood(train_matrix, test_matrix, k=K_NEIGHBORS):
     """
-    k-NN playlist–playlist con coseno binario correctamente alineado.
-    Cada fila es una playlist.
-    No reconstruye matrices ni proyecta manualmente vectores.
-    Funciona con test_matrix dispersa (muchas filas vacías).
+    Construye un vecindario user-based usando similitud coseno.
+
+    Para cada playlist del conjunto test calcula las k playlists más
+    similares del training usando:
+
+        sim(u, v) = (r_u · r_v) / (||r_u|| * ||r_v||)
+
+    donde r_u es el vector de canciones de la playlist u.
+
+    Ambas matrices comparten el mismo espacio de columnas (track_to_col del train),
+    por lo que no es necesario ningún reindexado.
+
+    Parámetros
+    ----------
+    train_matrix : sp.csr_matrix, shape (n_playlists_train, n_tracks)
+        Matriz binaria playlist × canción del training.
+    test_matrix : sp.csr_matrix, shape (n_playlists_test, n_tracks)
+        Matriz binaria playlist × canción del test.
+    k : int
+        Tamaño del vecindario.
+
+    Devuelve
+    --------
+    neighborhoods : dict
+        { fila_test (int): [ (fila_train (int), similitud), ... ] }
     """
+
+    print("=== BUILD USER NEIGHBORHOOD ===")
+
+    n_test  = test_matrix.shape[0]
+    n_train = train_matrix.shape[0]
+
+    print(f"Playlists en test:  {n_test}")
+    print(f"Playlists en train: {n_train}")
+
+    # ------------------------------------------------------------------
+    # Normalización para similitud coseno
+    # ------------------------------------------------------------------
+    train_popularity = train_matrix.getnnz(axis=1)   # shape (n_train,)
+    norms_train = np.sqrt(train_popularity.astype(float))
+    norms_train[norms_train == 0] = 1.0
+
+    test_popularity = test_matrix.getnnz(axis=1)     # shape (n_test,)
+    norms_test = np.sqrt(test_popularity.astype(float))
+    norms_test[norms_test == 0] = 1.0
+
+    M_train   = train_matrix.tocsr()
+    M_test    = test_matrix.tocsr()
+    M_train_T = M_train.T.tocsr()   # (n_tracks, n_train) — precomputado
+
+    # ------------------------------------------------------------------
+    # Procesamiento por lotes (batches)
+    #
+    #   S_batch = M_test[start:end] @ M_train.T   shape (B, n_train)
+    #
+    # El tamaño de batch controla el uso de RAM:
+    #   B x n_train x 4 bytes  ->  500 x 1M x 4 ~ 2 GB (denso)
+    # Ajusta BATCH_SIZE según la RAM disponible.
+    # ------------------------------------------------------------------
+    BATCH_SIZE = 500
+
+    print(f"Calculando vecindarios (k={k}, batch={BATCH_SIZE})...")
 
     neighborhoods = {}
 
-    # Normas L2 del train (binario)
-    train_norms = np.sqrt(train_matrix.getnnz(axis=1))
+    for start in range(0, n_test, BATCH_SIZE):
+        end = min(start + BATCH_SIZE, n_test)
 
-    # Filas no vacías del test
-    test_nnz = test_matrix.getnnz(axis=1)
-    non_empty_rows = np.where(test_nnz > 0)[0]
+        if start % 1000 == 0:
+            print(f"  Procesadas {start}/{n_test} playlists...")
 
-    if verbose:
-        print(f"Playlists test no vacías: {len(non_empty_rows)}")
+        # --- NUMERADOR: shape (B, n_train) ---
+        scores_batch = M_test[start:end].dot(M_train_T)
+        scores_batch = scores_batch.toarray().astype(np.float32)
 
-    for pid in non_empty_rows:
-        test_row = test_matrix.getrow(pid)
-        test_cols = test_row.indices        # tracks de la playlist
-        test_norm = np.sqrt(len(test_cols))
+        # --- DENOMINADOR: / ||r_v|| para cada vecino en train ---
+        scores_batch /= norms_train[np.newaxis, :]
 
-        # Submatriz: playlists de train restringidas a tracks del test
-        train_sub = train_matrix[:, test_cols]
+        # --- / ||r_u|| para cada playlist query ---
+        scores_batch /= norms_test[start:end, np.newaxis]
 
-        # Producto escalar playlist–playlist
-        dots = train_sub.sum(axis=1).A1     # |A ∩ B|
+        # --- Top-k por fila ---
+        actual_k = min(k, scores_batch.shape[1])
 
-        # Coseno binario correctamente definido
-        denom = train_norms * test_norm
-        sims = np.zeros_like(dots, dtype=float)
-        mask = denom > 0
-        sims[mask] = dots[mask] / denom[mask]
+        for i, scores in enumerate(scores_batch):
+            if scores.max() == 0:
+                continue
 
-        # Caso límite: no hay solapamiento real
-        if sims.max() == 0:
-            neighborhoods[str(pid)] = []
-            continue
+            n_non_zero = np.count_nonzero(scores)
+            current_k = min(actual_k, n_non_zero)
+            if current_k == 0:
+                continue
 
-        # Top-k vecinos reales
-        kk = min(k, (sims > 0).sum())
-        topk = np.argpartition(-sims, kk - 1)[:kk]
-        topk = topk[np.argsort(-sims[topk])]
+            top_idx = np.argpartition(-scores, current_k)[:current_k]
+            top_idx = top_idx[np.argsort(-scores[top_idx])]
 
-        if return_scores:
-            neighborhoods[str(pid)] = [
-                (int(i), float(sims[i])) for i in topk if sims[i] > 0
-            ]
-        else:
-            neighborhoods[str(pid)] = [
-                int(i) for i in topk if sims[i] > 0
-            ]
+            neighborhoods[start + i] = [(int(v), float(scores[v])) for v in top_idx]
 
+    print(f"Vecindarios calculados: {len(neighborhoods)}")
     return neighborhoods
 
-k = 2
 
-neighborhoods = build_neighborhood(
-    matrix,
-    test_matrix,
-    k,
-    return_scores=True
-)
+if __name__ == "__main__":
 
+    print("Cargando training matrix...")
+    train_matrix = load_npz(TRAIN_MATRIX_PATH).tocsr()
+    print(f"  Shape: {train_matrix.shape}")
 
-print(len(neighborhoods))
-print(list(neighborhoods.items())[:3])
+    print("Cargando test matrix...")
+    test_matrix = load_npz(TEST_MATRIX_PATH).tocsr()
+    print(f"  Shape: {test_matrix.shape}")
 
+    user_neighborhoods = build_user_neighborhood(
+        train_matrix,
+        test_matrix,
+        k=K_NEIGHBORS
+    )
 
-with open(OUTPUT_PATH, "w") as f:
-    json.dump(neighborhoods, f)
+    with open(OUTPUT_PATH, "w") as f:
+        json.dump(user_neighborhoods, f)
+
+    print(f"Vecindarios guardados en: {OUTPUT_PATH}")
