@@ -2,169 +2,167 @@ import json
 from collections import defaultdict
 from scipy.sparse import load_npz
 
-NEIGHBORHOOD_PATH = "neighborhood_item.json"
-TEST_MATRIX_PATH = "test_matrix.npz"
+NEIGHBORHOOD_PATH   = "neighborhood_item.json"
+TEST_MATRIX_PATH    = "test_matrix.npz"
+TRACK_TO_COL_PATH   = "track_to_col.json"
+TOP500_PATH         = "top_500_tracks.json"
+OUTPUT_PATH         = "recommendations_item.json"
 
-TRACK_TO_COL_PATH = "track_to_col.json"
-TRACK_TO_COL_TEST_PATH = "track_to_col_test.json"
-
-OUTPUT_PATH = "recommendations_item.json"
-
-TOP_K = 5
+N_RECOMMENDATIONS = 500   # número de tracks a recomendar por playlist
 
 
-# -----------------------------
-# Cargar vecindario
-# -----------------------------
+# ------------------------------------------------------------------
+# 1. Cargar vecindario item-based
+# ------------------------------------------------------------------
+print("Cargando vecindario...")
 with open(NEIGHBORHOOD_PATH, "r", encoding="utf-8") as f:
     item_neighbors = json.load(f)
+print(f"  Vecindarios cargados: {len(item_neighbors)}")
 
-print("Vecindarios cargados:", len(item_neighbors))
 
-
-# -----------------------------
-# Cargar mappings
-# -----------------------------
+# ------------------------------------------------------------------
+# 2. Cargar mappings URI ↔ columna
+# ------------------------------------------------------------------
 with open(TRACK_TO_COL_PATH, "r", encoding="utf-8") as f:
     track_to_col = json.load(f)
 
-with open(TRACK_TO_COL_TEST_PATH, "r", encoding="utf-8") as f:
-    track_to_col_test = json.load(f)
 
-col_to_track = {v: k for k, v in track_to_col.items()}
-col_to_track_test = {v: k for k, v in track_to_col_test.items()}
+# ELIMINAR las 4 líneas de track_to_col_test y sustituir por:
+col_to_track      = {v: k for k, v in track_to_col.items()}
+col_to_track_test = col_to_track   # mismo espacio de columnas
 
-print("Tracks training:", len(track_to_col))
-print("Tracks test:", len(track_to_col_test))
-
-
-# -----------------------------
-# Calcular canciones populares
-# -----------------------------
-print("\nCalculando canciones populares...")
-
-popularity = defaultdict(int)
-
-for uri in track_to_col.keys():
-    popularity[uri] += 1
-
-popular_tracks = sorted(
-    popularity.items(),
-    key=lambda x: x[1],
-    reverse=True
-)
-
-popular_uris = [uri for uri, _ in popular_tracks[:TOP_K]]
-
-print("Top populares:", popular_uris)
+print(f"  Tracks training: {len(track_to_col)}")
+print(f"  Tracks test:     {len(col_to_track_test)}")
 
 
-# -----------------------------
-# Cargar matriz de test
-# -----------------------------
+# ------------------------------------------------------------------
+# 3. Cargar lista de popularidad como fallback
+#
+#    top_500_tracks.json tiene formato:
+#    [ {"rank": 1, "track_uri": "spotify:track:...", "playlist_count": N}, ... ]
+#
+#    Usamos el orden del fichero (ya está ordenado por popularidad desc.)
+#    como pool de fallback para completar hasta 500 recomendaciones.
+# ------------------------------------------------------------------
+print("Cargando tracks populares (fallback)...")
+with open(TOP500_PATH, "r", encoding="utf-8") as f:
+    top500_raw = json.load(f)
+
+# Lista ordenada de URIs populares (ya viene ordenada por rank)
+popular_uris_ordered = [entry["track_uri"] for entry in top500_raw]
+print(f"  Tracks en pool de popularidad: {len(popular_uris_ordered)}")
+
+
+# ------------------------------------------------------------------
+# 4. Cargar matriz de test
+# ------------------------------------------------------------------
+print("Cargando test matrix...")
 test_matrix = load_npz(TEST_MATRIX_PATH).tocsr()
-
-print("Shape matriz test:", test_matrix.shape)
-
 n_playlists = test_matrix.shape[0]
+print(f"  Shape: {test_matrix.shape}")
 
 
-# -----------------------------
-# Contadores diagnóstico
-# -----------------------------
-total_tracks_test = 0
-tracks_found_in_train = 0
-tracks_with_neighbors = 0
+# ------------------------------------------------------------------
+# 5. Generar recomendaciones
+# ------------------------------------------------------------------
+print(f"\nGenerando recomendaciones ({n_playlists} playlists)...\n")
 
+K_VALUES = [15, 30, 60, 100, 150]
 
-# -----------------------------
-# Generar recomendaciones
-# -----------------------------
-recommendations = []
+for k in K_VALUES:
+    print(f"\n=== K = {k} ===")
+    recommendations = []
+    # Contadores de diagnóstico
+    total_seed_tracks       = 0
+    tracks_in_neighborhood  = 0
+    playlists_with_fallback = 0
 
-for pid in range(n_playlists):
+    for pid in range(n_playlists):
 
-    try:
+        if pid % 1000 == 0:
+            print(f"  Playlist {pid}/{n_playlists}...")
 
-        row = test_matrix.getrow(pid)
+        try:
+            row = test_matrix.getrow(pid)
 
-        present_uris = set()
+            # --- Canciones ya presentes en la playlist (seed) ---
+            present_uris = set()
+            for test_col_id in row.indices:
+                total_seed_tracks += 1
+                uri = col_to_track_test.get(test_col_id)
+                if uri is not None:
+                    present_uris.add(uri)
 
-        for test_id in row.indices:
+        # --- Acumular scores item-based ---
+        # Para cada canción seed que tiene vecindario, sumamos las
+        # similitudes de sus vecinos: score[j] += sim(seed, j)
+            scores = defaultdict(float)
 
-            total_tracks_test += 1
-
-            uri = col_to_track_test.get(test_id)
-
-            if uri is None:
-                continue
-
-            tracks_found_in_train += 1
-            present_uris.add(uri)
-
-        scores = defaultdict(float)
-
-        # recorrer canciones de la playlist
-        for uri in present_uris:
-
-            neighbors = item_neighbors.get(uri)
-
-            if neighbors is None:
-                continue
-
-            tracks_with_neighbors += 1
-
-            for neighbor_uri, similarity in neighbors:
-
-                if neighbor_uri == uri:
+            for uri in present_uris:
+                neighbors = item_neighbors.get(uri)
+                if neighbors is None:
                     continue
+                tracks_in_neighborhood += 1
+                for neighbor_uri, similarity in neighbors[:k]:   # ← truncar a k
+                    if neighbor_uri not in present_uris:
+                        scores[neighbor_uri] += similarity
 
-                scores[neighbor_uri] += similarity
+        # --- Ordenar por score descendente y tomar top N ---
+            ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+            rec_uris = [uri for uri, _ in ranked[:N_RECOMMENDATIONS]]
 
-        # eliminar canciones ya presentes
-        ranked = [
-            (track, score)
-            for track, score in scores.items()
-            if track not in present_uris
-        ]
+        # --- Fallback: completar hasta 500 con tracks populares ---
+        # Si el item-based no llega a 500, rellenamos en orden de
+        # popularidad, saltando tracks ya en seed o ya recomendados.
+            if len(rec_uris) < N_RECOMMENDATIONS:
+                playlists_with_fallback += 1
+                rec_set = set(rec_uris)
+                for pop_uri in popular_uris_ordered:
+                    if len(rec_uris) >= N_RECOMMENDATIONS:
+                        break
+                    if pop_uri not in present_uris and pop_uri not in rec_set:
+                        rec_uris.append(pop_uri)
+                        rec_set.add(pop_uri)
 
-        ranked = sorted(
-            ranked,
-            key=lambda x: x[1],
-            reverse=True
-        )
+        except Exception as e:
+            print(f"  Error en playlist {pid}: {e}")
+            # Fallback total: top populares que no están en seed
+            rec_uris = []
+            present_uris = set()
+            rec_set = set()
+            for pop_uri in popular_uris_ordered:
+                if len(rec_uris) >= N_RECOMMENDATIONS:
+                    break
+                if pop_uri not in present_uris and pop_uri not in rec_set:
+                    rec_uris.append(pop_uri)
+                    rec_set.add(pop_uri)
 
-        rec_uris = [uri for uri, _ in ranked[:TOP_K]]
+        recommendations.append({
+            "pid": pid,
+            "recommendations": rec_uris
+        })
 
-        # fallback si no hay recomendaciones
-        if len(rec_uris) == 0:
-            rec_uris = popular_uris
-
-    except Exception as e:
-
-        print("Error en playlist", pid, ":", e)
-
-        rec_uris = popular_uris
-
-    recommendations.append({
-        "pid": pid,
-        "recommendations": rec_uris
-    })
-
-
-# -----------------------------
-# Guardar recomendaciones
-# -----------------------------
-with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
-    json.dump(recommendations, f, indent=2)
+    print("\n--- DIAGNÓSTICO ---")
+    print(f"Total playlists procesadas:              {n_playlists}")
+    print(f"Total tracks en seeds:                   {total_seed_tracks}")
+    print(f"Tracks seed con vecindario disponible:   {tracks_in_neighborhood}")
+    print(f"Playlists con fallback de popularidad:   {playlists_with_fallback}")
+    print(f"Playlists con fallback / total:          "
+    f"{playlists_with_fallback}/{n_playlists} "
+    f"({100*playlists_with_fallback/n_playlists:.1f}%)")
+    # Verificar que todas las playlists tienen exactamente 500 recomendaciones
+    lengths = [len(r["recommendations"]) for r in recommendations]
+    print(f"Longitud mín/máx de listas:              {min(lengths)} / {max(lengths)}")
+    assert min(lengths) == N_RECOMMENDATIONS, "¡Alguna playlist tiene menos de 500 recomendaciones!"
+    print("OK: todas las playlists tienen exactamente 500 recomendaciones.")
 
 
-# -----------------------------
-# Diagnóstico final
-# -----------------------------
-print("\n--- DIAGNÓSTICO ---")
+    output_path = f"recommendations_item_k{k}.json"
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(recommendations, f)
+    print(f"Guardado: {output_path}")
 
-print("Tracks totales en test:", total_tracks_test)
-print("Tracks encontrados en training:", tracks_found_in_train)
-print("Tracks con vecindario:", tracks_with_neighbors)
-print("Total playlists procesadas:", n_playlists)
+# ------------------------------------------------------------------
+# 7. Diagnóstico final
+# ------------------------------------------------------------------
+
