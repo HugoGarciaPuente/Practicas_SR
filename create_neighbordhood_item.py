@@ -4,15 +4,15 @@ import scipy.sparse as sp
 from scipy.sparse import load_npz
 
 TRAIN_MATRIX_PATH = "playlist_track_matrix.npz"
+TEST_MATRIX_PATH = "test_matrix.npz"
 TRACK_TO_COL_PATH = "track_to_col.json"
-TRACK_TO_COL_TEST_PATH = "track_to_col_test.json"
 OUTPUT_PATH = "neighborhood_item.json"
 
 # Número de vecinos a guardar por canción
 K_NEIGHBORS = 150
 
 
-def build_item_neighborhood(train_matrix, track_to_col, track_to_col_test, k=K_NEIGHBORS):
+def build_item_neighborhood(train_matrix, test_matrix, track_to_col, k=K_NEIGHBORS):
     """
     Construye un vecindario item-based usando similitud coseno.
 
@@ -45,17 +45,10 @@ def build_item_neighborhood(train_matrix, track_to_col, track_to_col_test, k=K_N
     # Invertir mapping para recuperar URI a partir del índice
     col_to_track = {v: k_uri for k_uri, v in track_to_col.items()}
 
-    # Canciones del test
-    test_uris = set(track_to_col_test.keys())
+    test_track_cols = np.unique(test_matrix.nonzero()[1])
+    common_tracks = [int(col) for col in test_track_cols]
+    
 
-    # Sólo calculamos vecindario para canciones test que existen en train
-    common_tracks = [
-        track_to_col[uri]
-        for uri in test_uris
-        if uri in track_to_col
-    ]
-
-    print(f"Tracks en test:                {len(test_uris)}")
     print(f"Tracks test presentes en train: {len(common_tracks)}")
 
     # ------------------------------------------------------------------
@@ -143,14 +136,16 @@ if __name__ == "__main__":
     with open(TRACK_TO_COL_PATH) as f:
         track_to_col = json.load(f)
 
-    with open(TRACK_TO_COL_TEST_PATH) as f:
-        track_to_col_test = json.load(f)
+    # AÑADIR en el __main__, tras cargar train_matrix
+    print("Cargando test matrix...")
+    test_matrix = load_npz(TEST_MATRIX_PATH).tocsr()
+    print(f"  Shape: {test_matrix.shape}")
 
     item_neighborhoods = build_item_neighborhood(
-        train_matrix,
-        track_to_col,
-        track_to_col_test,
-        k=K_NEIGHBORS
+    train_matrix,
+    test_matrix,        # ← la función extrae los tracks internamente
+    track_to_col,
+    k=K_NEIGHBORS
     )
 
     with open(OUTPUT_PATH, "w") as f:
