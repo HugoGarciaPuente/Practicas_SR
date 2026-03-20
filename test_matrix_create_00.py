@@ -2,7 +2,7 @@ import zipfile
 import json
 from scipy.sparse import csr_matrix, save_npz
 
-zip_path = "../spotify_test_playlists.zip"
+zip_path = "spotify_test_playlists.zip"
 TRACK_TO_COL_PATH = "track_to_col.json"   # reutilizamos el espacio de columnas del train
 
 rows = []
@@ -35,9 +35,11 @@ with zipfile.ZipFile(zip_path, "r") as zipf:
                     cols.append(col)
                     values.append(1)
 
+            row_to_pid = {i: pl["pid"] for i, pl in enumerate(playlists)}
             n_playlists = len(playlists)
 
 n_tracks = len(track_to_col)
+
 
 matrix = csr_matrix(
     (values, (rows, cols)),
@@ -45,6 +47,10 @@ matrix = csr_matrix(
 )
 
 save_npz("test_matrix.npz", matrix)
+
+with open("row_to_pid_test.json", "w") as f:
+    json.dump(row_to_pid, f)
+
 
 print("Matriz creada")
 print("Playlists:", n_playlists)
