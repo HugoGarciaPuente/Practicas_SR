@@ -12,10 +12,7 @@ OUTPUT_PATH            = "recommendations_user.json"
 N_RECOMMENDATIONS = 500
 
 
-# ------------------------------------------------------------------
-# 1. Cargar vecindario user-based
-#    Formato: { "test_pid": [(train_pid, sim), ...], ... }
-# ------------------------------------------------------------------
+#Cargar vecindario user-based
 
 print("Cargando vecindario user...")
 with open(NEIGHBORHOOD_PATH, "r", encoding="utf-8") as f:
@@ -23,26 +20,19 @@ with open(NEIGHBORHOOD_PATH, "r", encoding="utf-8") as f:
 print(f"  Vecindarios cargados: {len(user_neighbors)}")
 
 
-# ------------------------------------------------------------------
-# 2. Cargar mappings
-# ------------------------------------------------------------------
 with open(TRACK_TO_COL_PATH, "r", encoding="utf-8") as f:
     track_to_col = json.load(f)
 
-
-
-# Recuperar URI desde columna
+#Convierte los indices en uris 
 col_to_track      = {v: k for k, v in track_to_col.items()}
-# SUSTITUIR POR — reutilizar el mismo mapping del train
+
 col_to_track_test = col_to_track   # mismo espacio de columnas
 print(f"  Tracks (espacio compartido): {len(track_to_col)}")
 print(f"  Tracks training: {len(track_to_col)}")
 print(f"  Tracks test:     {len(col_to_track_test)}")
 
 
-# ------------------------------------------------------------------
-# 3. Cargar pool de popularidad para fallback
-# ------------------------------------------------------------------
+#Cargamos las populares 
 print("Cargando tracks populares (fallback)...")
 with open(TOP500_PATH, "r", encoding="utf-8") as f:
     top500_raw = json.load(f)
@@ -51,9 +41,7 @@ popular_uris_ordered = [entry["track_uri"] for entry in top500_raw]
 print(f"  Tracks en pool de popularidad: {len(popular_uris_ordered)}")
 
 
-# ------------------------------------------------------------------
-# 4. Cargar matrices
-# ------------------------------------------------------------------
+#cargamos tanto matriz de train como shape 
 print("Cargando matrices...")
 train_matrix = load_npz(TRAIN_MATRIX_PATH).tocsr()
 test_matrix  = load_npz(TEST_MATRIX_PATH).tocsr()
@@ -63,27 +51,17 @@ print(f"  Test shape:  {test_matrix.shape}")
 n_playlists = test_matrix.shape[0]
 
 
-# ------------------------------------------------------------------
-# 5. Generar recomendaciones
-#
-#    Para cada playlist test u:
-#      1. Obtener su seed (tracks ya presentes)
-#      2. Para cada vecino (training playlist v, similitud s_{u,v}):
-#           Para cada track i en v que no esté en el seed de u:
-#               scores[i] += s_{u,v}
-#      3. Ordenar por score y tomar top 500
-#      4. Rellenar con populares si no llega a 500
-# ------------------------------------------------------------------
+#Generación de recomendaciones 
 print(f"\nGenerando recomendaciones ({n_playlists} playlists)...\n")
 
-K_VALUES = [15, 30, 60, 100, 150]
+K_VALUES = [15, 30, 60, 100, 150] #Probamos distintos valores de k, (numero de vecinos)
 
 for k in K_VALUES:
     print(f"\n=== K = {k} ===")
-    recommendations      = []   # ← reset
-    total_seed_tracks    = 0    # ← reset
-    playlists_with_neighbors = 0  # ← reset
-    playlists_with_fallback  = 0  # ← reset
+    recommendations      = []
+    total_seed_tracks    = 0    
+    playlists_with_neighbors = 0  
+    playlists_with_fallback  = 0  
 
     for pid in range(n_playlists):
 
@@ -91,7 +69,7 @@ for k in K_VALUES:
             print(f"  Playlist {pid}/{n_playlists}...")
 
         try:
-            # --- Seed: tracks ya en la playlist test ---
+            #tracks ya en la playlist test
             row = test_matrix.getrow(pid)
             present_uris = set()
             for test_col_id in row.indices:
@@ -100,7 +78,7 @@ for k in K_VALUES:
                 if uri is not None:
                     present_uris.add(uri)
 
-        # --- Vecinos de esta playlist test ---
+        #Veicnos de esta playlist test 
             neighbors = user_neighbors.get(str(pid), [])
 
             scores = defaultdict(float)
@@ -110,7 +88,7 @@ for k in K_VALUES:
 
                 for train_pid, similarity in neighbors[:k]:
 
-                # Tracks de la playlist vecina (training)
+                #Tracks de la playlist vecina (training)
                     train_row = train_matrix.getrow(train_pid)
 
                     for train_col_id in train_row.indices:
@@ -119,13 +97,11 @@ for k in K_VALUES:
                             continue
                         if uri in present_uris:
                             continue
-                        scores[uri] += similarity
-
-        # --- Ordenar y tomar top N ---
+                        scores[uri] += similarity #Cuanto mas similiar es la playlist mas peso tiene 
             ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
             rec_uris = [uri for uri, _ in ranked[:N_RECOMMENDATIONS]]
 
-        # --- Fallback: rellenar hasta 500 con populares ---
+        #Rellenamos hasta las 500 con las populares sin duplicados ni canciones ya presentes 
             if len(rec_uris) < N_RECOMMENDATIONS:
                 playlists_with_fallback += 1
                 rec_set = set(rec_uris)
@@ -152,9 +128,7 @@ for k in K_VALUES:
             "pid": pid,
             "recommendations": rec_uris
         })
-    # ------------------------------------------------------------------
-    # 7. Diagnóstico
-    # ------------------------------------------------------------------
+
     print("\n--- DIAGNÓSTICO ---")
     print(f"Total playlists procesadas:             {n_playlists}")
     print(f"Total tracks en seeds:                  {total_seed_tracks}")
@@ -164,7 +138,7 @@ for k in K_VALUES:
 
     lengths = [len(r["recommendations"]) for r in recommendations]
     print(f"Longitud mín/máx de listas:             {min(lengths)} / {max(lengths)}")
-    assert min(lengths) == N_RECOMMENDATIONS, "¡Alguna playlist tiene menos de 500 recomendaciones!"
+    assert min(lengths) == N_RECOMMENDATIONS, "Alguna playlist tiene menos de 500 recomendaciones"
     print("OK: todas las playlists tienen exactamente 500 recomendaciones.")
     output_path = f"recommendations_user_k{k}.json"
     with open(output_path, "w", encoding="utf-8") as f:
