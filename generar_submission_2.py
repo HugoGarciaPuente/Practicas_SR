@@ -8,9 +8,9 @@ import json
 MEMBERS   = "Manuel David Barreiro Rodríguez, Carlos Hugo García Puente, Alejandro Varela Vázquez"   
 EMAILS    = "david.barreiro2@udc.es, c.hugo.gpuente@udc.es, alejandro.varela.vazquez1@udc.es"
 
-INPUT_JSON = "recommendations_item_k150.json"   # o recommendations_item.json
+INPUT_JSON = "recommendations_item_k15.json"   # o recommendations_item.json
 #INPUT_JSON = "recommendations_user_k150.json"   # o recommendations_item.json
-OUTPUT_CSV  = "submission.csv"
+OUTPUT_CSV  = f"submission_{INPUT_JSON[16:]}.csv"
 
 
 ROW_TO_PID_PATH = "row_to_pid_test.json"
@@ -32,7 +32,7 @@ with open(OUTPUT_CSV, "w", encoding="utf-8") as f:
         pid = row_to_pid[str(entry["pid"])]
         uris = entry["recommendations"]
         # Extraemos só o ID final, eliminando o prefixo "spotify:track:"
-        track_ids = [uri.split(":")[-1] for uri in uris]
+        track_ids = [uri for uri in uris]
         line = str(pid) + ", " + ", ".join(track_ids)
         f.write(line + "\n")
 
