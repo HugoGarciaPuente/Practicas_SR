@@ -1,6 +1,6 @@
 Resultados Versión proyectiva:
 
-PS C:\Users\usuario\Desktop\Facultad\Cuarto año\SR\version_final> & C:\Users\usuario\AppData\Local\Programs\Python\Python313\python.exe "c:/Users/usuario/Desktop/Facultad/Cuarto año/SR/version_final/evaluation_2.py"
+
 Evaluation results
 ===================
 Playlists evaluadas: 10000
@@ -23,7 +23,7 @@ PS C:\Users\usuario\Desktop\Facultad\Cuarto año\SR\version_final>
 
 Resultados versión con todas las playlist conocidas:
 
-PS C:\Users\usuario\Desktop\Facultad\Cuarto año\SR\version_final> & C:\Users\usuario\AppData\Local\Programs\Python\Python313\python.exe "c:/Users/usuario/Desktop/Facultad/Cuarto año/SR/version_final/evaluation_2.py"
+
 Evaluation results
 ===================
 Playlists evaluadas: 10000
