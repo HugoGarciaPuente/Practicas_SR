@@ -7,6 +7,7 @@ TRAIN_MATRIX_PATH = "playlist_track_matrix.npz"
 TEST_MATRIX_PATH  = "test_matrix.npz"
 TRACK_TO_COL_PATH = "track_to_col.json"
 TOP500_PATH       = "top_500_tracks.json"
+ROW_TO_PID_PATH   = "row_to_pid_test.json"
 
 N_RECOMMENDATIONS = 500
 K_LATENT          = 50   # número de características latentes
@@ -75,6 +76,9 @@ if __name__ == "__main__":
     with open(TOP500_PATH) as f:
         popular_uris = [e["track_uri"] for e in json.load(f)]
 
+    with open(ROW_TO_PID_PATH) as f:
+        row_to_pid = {int(k): v for k, v in json.load(f).items()}
+
     n_train = train_matrix.shape[0]
     n_test  = test_matrix.shape[0]
 
@@ -142,10 +146,11 @@ if __name__ == "__main__":
         scores_block = (U_block * sigma) @ Vt            # (batch, n_tracks)
 
         for local_idx in range(scores_block.shape[0]):
-            pid = start + local_idx
+            global_idx = start + local_idx
+            pid = row_to_pid.get(global_idx, global_idx)
 
             # Seed
-            row = test_matrix.getrow(pid)
+            row = test_matrix.getrow(global_idx)
             present_uris = set()
             for col in row.indices:
                 uri = col_to_track.get(int(col))
@@ -185,6 +190,10 @@ if __name__ == "__main__":
     print(f"Total playlists procesadas:         {n_test}")
     print(f"Playlists con fallback:             {playlists_with_fallback} "
           f"({100*playlists_with_fallback/n_test:.1f}%)")
+    lengths = [len(r["recommendations"]) for r in recommendations]
+    print(f"Longitud mín/máx de listas:         {min(lengths)} / {max(lengths)}")
+    assert min(lengths) == N_RECOMMENDATIONS
+    print("OK: todas las playlists tienen exactamente 500 recomendaciones.")
     lengths = [len(r["recommendations"]) for r in recommendations]
     print(f"Longitud mín/máx de listas:         {min(lengths)} / {max(lengths)}")
     assert min(lengths) == N_RECOMMENDATIONS
