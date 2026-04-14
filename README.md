@@ -17,7 +17,6 @@ NDCG mean abs diff:        0.1751961418
 Max differences
 R-Precision max diff: 0.7940111656
 NDCG max diff:        0.7212651457
-PS C:\Users\usuario\Desktop\Facultad\Cuarto año\SR\version_final> 
 
 
 
@@ -40,4 +39,3 @@ NDCG mean abs diff:        0.1727205255
 Max differences
 R-Precision max diff: 0.7934940158
 NDCG max diff:        0.7185838036
-PS C:\Users\usuario\Desktop\Facultad\Cuarto año\SR\version_final> 
