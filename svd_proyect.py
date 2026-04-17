@@ -11,23 +11,23 @@ TOP500_PATH        = "top_500_tracks.json"
 ROW_TO_PID_PATH    = "row_to_pid_test.json"
 
 N_RECOMMENDATIONS  = 500
-K_LATENT           = 50   # número de características latentes
+K_VALUES = [10, 50, 100, 200] #características latentes a probar
 BATCH_SIZE         = 50   # playlists por bloque (axustar según RAM)
 
 
 def recommend_from_scores(score_row, present_uris, col_to_track,
                            popular_uris, n=N_RECOMMENDATIONS):
     """
-    Dado un vector de scores para una playlist, devuelve las N
-    recomendaciones excluyendo el seed y rellenando con populares.
+    Dado un vector de scores pra unha playlist, devolve as N
+    recomendacions excluindo o seed e rellenando con populares.
 
     Parámetros
     ----------
     score_row    : np.ndarray (n_tracks,) — scores estimados
-    present_uris : set  — URIs ya en el seed (a excluir)
+    present_uris : set  — URIs xa no seed (a excluir)
     col_to_track : dict — col_index → URI
-    popular_uris : list — pool de fallback ordenado por popularidad
-    n            : int  — número de recomendaciones a devolver
+    popular_uris : list — pool de fallback ordenado por popularidade
+    n            : int  — número de recomendacions a devolver
 
     Devuelve
     --------
@@ -61,18 +61,14 @@ def recommend_from_scores(score_row, present_uris, col_to_track,
 
 if __name__ == "__main__":
 
-    # ------------------------------------------------------------------
-    # 1. Cargar matrices e mappings
-    # ------------------------------------------------------------------
-    print("Cargando matrices...")
+    # Cargar todo unha vez
+    print("Cargando matrices...")   
     train_matrix = load_npz(TRAIN_MATRIX_PATH).tocsr()
     test_matrix  = load_npz(TEST_MATRIX_PATH).tocsr()
-    print(f"  Train shape: {train_matrix.shape}")
-    print(f"  Test shape:  {test_matrix.shape}")
 
     with open(TRACK_TO_COL_PATH) as f:
         track_to_col = json.load(f)
-    col_to_track = {v: k for k, v in track_to_col.items()}
+        col_to_track = {v: k for k, v in track_to_col.items()}
 
     with open(TOP500_PATH) as f:
         popular_uris = [e["track_uri"] for e in json.load(f)]
@@ -81,134 +77,70 @@ if __name__ == "__main__":
         row_to_pid = {int(k): v for k, v in json.load(f).items()}
 
     n_test = test_matrix.shape[0]
+    # SVD proxectando pra cada valor das características latentes
+    for K_LATENT in K_VALUES:
+        print(f"\n{'='*50}")
+        print(f"Probando K = {K_LATENT}")
+        print(f"{'='*50}")
 
-    # ------------------------------------------------------------------
-    # 2. SVD só sobre datos de training
-    #
-    #    svds devolve os K_LATENT valores singulares MÁIS GRANDES:
-    #      U_train : (n_train, K_LATENT)  — playlists en espazo latente
-    #      sigma   : (K_LATENT,)          — pesos de cada característica
-    #      Vt      : (K_LATENT, n_tracks) — tracks en espazo latente
-    #
-    #    svds devolve en orde ASCENDENTE → invertimos
-    # ------------------------------------------------------------------
-    print(f"Calculando SVD só sobre train (k={K_LATENT})...")
-    U_train, sigma, Vt = svds(train_matrix.astype(np.float32), k=K_LATENT)
+        # SVD solo sobre train — se recalcula para cada K
+        print(f"Calculando SVD sobre train (k={K_LATENT})...")
+        U_train, sigma, Vt = svds(train_matrix.astype(np.float32), k=K_LATENT)
 
-    # Reordenar de maior a menor valor singular
-    idx    = np.argsort(-sigma)
-    sigma  = sigma[idx]
-    U_train = U_train[:, idx]
-    Vt     = Vt[idx, :]
+        idx     = np.argsort(-sigma)
+        sigma   = sigma[idx]
+        Vt      = Vt[idx, :]
+        V       = Vt.T
 
-    print(f"  U_train shape: {U_train.shape}")
-    print(f"  sigma shape:   {sigma.shape}")
-    print(f"  Vt shape:      {Vt.shape}")
+        sigma_inv   = 1.0 / sigma
+        V_sigma_inv = V * sigma_inv   # (n_tracks, K_LATENT)
 
-    # V é a trasposta de Vt: (n_tracks, K_LATENT)
-    V = Vt.T   # (n_tracks, K_LATENT)
+        recommendations         = []
+        playlists_with_fallback = 0
+        cold_start_count        = 0
 
-    # Precalculamos V × Σ^-1 para proxección eficiente
-    # (n_tracks, K_LATENT) × diag(1/sigma) = (n_tracks, K_LATENT)
-    sigma_inv     = 1.0 / sigma                  # (K_LATENT,)
-    V_sigma_inv   = V * sigma_inv                # broadcast: (n_tracks, K_LATENT)
+        for start in range(0, n_test, BATCH_SIZE):
+            end = min(start + BATCH_SIZE, n_test)
+            if start % 1000 == 0:
+                print(f"  Playlist {start}/{n_test}...")
 
-    # Precalculamos Σ × Vt para scoring eficiente
-    # diag(sigma) × Vt = (K_LATENT, n_tracks)  — multiplicamos cada fila de Vt por sigma
-    sigma_Vt = sigma[:, np.newaxis] * Vt         # (K_LATENT, n_tracks)
+            R_block      = test_matrix[start:end].toarray().astype(np.float32)
+            U_block      = R_block @ V_sigma_inv          # proyección (ec. 4)
+            scores_block = (U_block * sigma) @ Vt         # scoring   (ec. 5)
 
-    # ------------------------------------------------------------------
-    # 3. Proxección + scoring en bloques
-    #
-    #    Para cada playlist de test con seed r_{m+1} (vector esparso):
-    #
-    #      Proxección ao espazo latente:
-    #        u_{m+1} = r_{m+1} × V˜ × Σ^{-1}          (ec. 4)
-    #                shape: (1, K_LATENT)
-    #
-    #      Scores para todos os tracks:
-    #        r̂_{m+1} = u_{m+1} × Σ × Vt               (ec. 5)
-    #                shape: (1, n_tracks)
-    #
-    #    Nota: u × Σ × Vt = (r × V × Σ^{-1}) × Σ × Vt = r × V × Vt
-    #    Pero manteemos a fórmula explícita para claridade.
-    # ------------------------------------------------------------------
-    print(f"\nProxectando e recomendando en bloques de {BATCH_SIZE}...")
+            for local_idx in range(scores_block.shape[0]):
+                global_idx = start + local_idx
+                pid = row_to_pid.get(global_idx, global_idx)
 
-    recommendations         = []
-    playlists_with_fallback = 0
-    cold_start_count        = 0
+                row = test_matrix.getrow(global_idx)
+                present_uris = {
+                    col_to_track[int(col)]
+                    for col in row.indices
+                    if int(col) in col_to_track
+                }
 
-    for start in range(0, n_test, BATCH_SIZE):
-        end = min(start + BATCH_SIZE, n_test)
+                if len(present_uris) == 0:
+                    cold_start_count += 1
 
-        if start % 1000 == 0:
-            print(f"  Playlist {start}/{n_test}...")
+                rec_uris = recommend_from_scores(
+                    scores_block[local_idx], present_uris,
+                    col_to_track, popular_uris
+                )
 
-        # Extraer bloque de test como densa: (batch, n_tracks)
-        R_block = test_matrix[start:end].toarray().astype(np.float32)
+                if len(rec_uris) < N_RECOMMENDATIONS:
+                    playlists_with_fallback += 1
 
-        # Proxección: (batch, n_tracks) × (n_tracks, K_LATENT) → (batch, K_LATENT)
-        U_block = R_block @ V_sigma_inv         # ec. 4
+                recommendations.append({"pid": pid, "recommendations": rec_uris})
 
-        # Scoring: (batch, K_LATENT) × (K_LATENT, n_tracks) → (batch, n_tracks)
-        # Equivalente a u × Σ × Vt fila a fila
-        scores_block = (U_block * sigma) @ Vt  # ec. 5
+            del R_block, U_block, scores_block
 
-        for local_idx in range(scores_block.shape[0]):
-            global_idx = start + local_idx
-            pid = row_to_pid.get(global_idx, global_idx)
+        output_path = f"recommendations_svd_proj_k{K_LATENT}.json"
+        with open(output_path, "w") as f:
+            json.dump(recommendations, f)
 
-            # Seed da playlist
-            row = test_matrix.getrow(global_idx)
-            present_uris = set()
-            for col in row.indices:
-                uri = col_to_track.get(int(col))
-                if uri is not None:
-                    present_uris.add(uri)
+        lengths = [len(r["recommendations"]) for r in recommendations]
+        print(f"K={K_LATENT} → cold-start: {cold_start_count} | "
+            f"fallback: {playlists_with_fallback} | "
+            f"min/max: {min(lengths)}/{max(lengths)}") #check das recomendacións
+        print(f"Guardado: {output_path}")
 
-            if len(present_uris) == 0:
-                cold_start_count += 1
-
-            rec_uris = recommend_from_scores(
-                score_row    = scores_block[local_idx],
-                present_uris = present_uris,
-                col_to_track = col_to_track,
-                popular_uris = popular_uris
-            )
-
-            if len(rec_uris) < N_RECOMMENDATIONS:
-                playlists_with_fallback += 1
-
-            recommendations.append({
-                "pid": pid,
-                "recommendations": rec_uris
-            })
-
-        del R_block, U_block, scores_block
-
-    # ------------------------------------------------------------------
-    # 4. Gardar
-    # ------------------------------------------------------------------
-    output_path = f"recommendations_svd_proj_k{K_LATENT}.json"
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(recommendations, f)
-    print(f"\nRecomendaciones gardadas en: {output_path}")
-
-    # ------------------------------------------------------------------
-    # 5. Diagnóstico
-    # ------------------------------------------------------------------
-    print("\n--- DIAGNÓSTICO ---")
-    print(f"K latente:                          {K_LATENT}")
-    print(f"Total playlists procesadas:         {n_test}")
-    print(f"  Cold start (sen seed):            {cold_start_count} "
-          f"({100*cold_start_count/n_test:.1f}%)")
-    print(f"  Con seed parcial:                 {n_test - cold_start_count} "
-          f"({100*(n_test-cold_start_count)/n_test:.1f}%)")
-    print(f"Playlists con fallback:             {playlists_with_fallback} "
-          f"({100*playlists_with_fallback/n_test:.1f}%)")
-    lengths = [len(r["recommendations"]) for r in recommendations]
-    print(f"Longitud mín/máx de listas:         {min(lengths)} / {max(lengths)}")
-    assert min(lengths) == N_RECOMMENDATIONS, \
-        f"Hai playlists con menos de {N_RECOMMENDATIONS} recomendacións!"
-    print("OK: todas las playlists tienen exactamente 500 recomendaciones.")
