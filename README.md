@@ -110,11 +110,6 @@ python generar_submission_2.py   # → submission.csv
 | 100 | 0.1262      | 0.2824 |  7.51  |
 | 200 | 0.1283      | 0.2820 |  7.14  |
 
----
-
-## Conclusiones
-
-`svd_both` supera sistemáticamente a `svd_proj` en las tres métricas para todo K, lo que es esperable: al incluir las playlists de test en el SVD, sus patrones influyen directamente en los factores latentes aprendidos. El salto más grande de rendimiento se produce de K=10 a K=50 (~0.04 de R-Precision en ambos enfoques), mientras que de K=100 a K=200 la mejora es marginal (~0.002), lo que sugiere que el modelo satura en torno a K=100. La diferencia en Clicks entre enfoques es especialmente pronunciada (5.84 vs 7.14 en K=200), indicando que `svd_proj` ordena peor las primeras recomendaciones aunque recupere cantidades similares de tracks relevantes. Comparado con la iteración anterior, el mejor SVD (`svd_both` K=200, R-Precision=0.1289) queda por debajo del mejor item-based (K=150, R-Precision=0.1477) y del mejor user-based (K=150, R-Precision=0.1506), por lo que los enfoques de vecindario resultan más competitivos en este dataset con los hiperparámetros evaluados.
 
 ---
 
