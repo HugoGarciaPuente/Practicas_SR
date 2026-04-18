@@ -80,10 +80,10 @@ for mode in MODES_ITER2:
             print(f"  {recs_path} no encontrado, saltando...")
             continue
 
+        # Construir mapeo inverso: pid_real → recomendaciones
         pid_to_recs = {
-            int(row_to_pid[str(pl["pid"])]): pl["recommendations"]
+            pl["pid"]: pl["recommendations"]
             for pl in recs_data
-            if str(pl["pid"]) in row_to_pid
         }
 
         r_precs, ndcgs, clicks_list = [], [], []
