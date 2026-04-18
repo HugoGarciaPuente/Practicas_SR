@@ -12,11 +12,6 @@ INPUT_JSON = "recommendations_svd1_k10.json"   # o recommendations_sen proxectar
 #INPUT_JSON = "recommendations_svd_proj_k10.json"  # o recommendations proxectar e 10 características latentes
 OUTPUT_CSV  = "submission.csv"
 
-ROW_TO_PID_PATH = "row_to_pid_test.json"
-
-with open(ROW_TO_PID_PATH, "r", encoding="utf-8") as f:
-    row_to_pid = json.load(f)
-
 with open(INPUT_JSON, "r", encoding="utf-8") as f:
     recommendations = json.load(f)
 
@@ -28,7 +23,7 @@ with open(OUTPUT_CSV, "w", encoding="utf-8") as f:
 
     # Unha fila por playlist
     for entry in recommendations:
-        pid = row_to_pid[str(entry["pid"])]
+        pid = entry["pid"]
         uris = entry["recommendations"]
         # Extraemos só o ID final, eliminando o prefixo "spotify:track:"
         track_ids = [uri.split(":")[-1] for uri in uris]
