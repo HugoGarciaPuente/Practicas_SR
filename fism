@@ -36,12 +36,12 @@ import tensorflow as tf
 # ─────────────────────────────────────────────
 # HIPERPARÁMETROS
 # ─────────────────────────────────────────────
-K             = 20      # dimensión del espacio latente (rango de la factorización)
+K             = 5      # dimensión del espacio latente (rango de la factorización)
 LAMBDA        = 0.01    # peso L1
 BETA          = 0.01    # peso L2
-LEARNING_RATE = 0.001   # lr conservador: la multiplicación P·Qᵀ amplifica gradientes
-EPOCHS        = 200
-GRAD_CLIP     = 1.0     # gradient clipping: evita NaN explosion en optimización bilineal
+LEARNING_RATE = 0.005   # lr conservador: la multiplicación P·Qᵀ amplifica gradientes
+EPOCHS        = 500
+GRAD_CLIP     = 5.0     # gradient clipping: evita NaN explosion en optimización bilineal
 TOP_K         = 500
 
 TRAIN_PATH      = "train_trimmed.json"
