@@ -1,21 +1,6 @@
 """
-SLIM — Sparse Linear Methods para recomendación de playlists
-============================================================
-Optimiza la matriz de coeficientes S (items × items) resolviendo:
-
-    min_S  ||X - X·S||²_F  +  λ·||S||_1  +  β·||S||²_F
-    s.t.   S ≥ 0  (coeficientes no negativos)
-           diag(S) = 0  (un item no se recomienda a sí mismo)
-
-Donde X es la matriz binaria (playlists × tracks).
-
-Flujo:
-    1. Carga los JSONs del trimmed dataset
-    2. Construye el vocabulario de tracks y la matriz X sparse
-    3. Convierte X a tf.SparseTensor
-    4. Entrena S con gradient descent + restricciones
-    5. Genera recomendaciones para las playlists de test
-    6. Guarda un JSON compatible con evaluation_03.py y generar_submission_04.py
+SLIM — Sparse Linear Methods para recomendacións de playlists
+Optimiza a matriz de coeficientes S (items × items) resolvendo un problema de optimización.
 """
 
 import json
@@ -23,22 +8,18 @@ import numpy as np
 import scipy.sparse as sp
 import tensorflow as tf
 
-# ─────────────────────────────────────────────
-# HIPERPARÁMETROS  (ajusta según tus pruebas)
-# ─────────────────────────────────────────────
-LAMBDA      = 0.01    # peso L1: controla la esparsidad de S
-BETA        = 0.01    # peso L2: evita sobreajuste
+# PARÁMETROS  
+LAMBDA      = 0.01    # peso L1: controla  esparsidade de S
+BETA        = 0.01    # peso L2: evita sobreaxuste
 LEARNING_RATE = 0.01
 EPOCHS      = 200
-TOP_K       = 500     # recomendaciones por playlist
+TOP_K       = 500     # recomendacións por playlist
 
 TRAIN_PATH      = "train_trimmed.json"
 TEST_INPUT_PATH = "test_input_trimmed.json"
 OUTPUT_JSON     = "recommendations_slim.json"
 
-# ─────────────────────────────────────────────
 # 1. CARGA DE DATOS
-# ─────────────────────────────────────────────
 print("Cargando datos...")
 
 with open(TRAIN_PATH, "r", encoding="utf-8") as f:
@@ -47,12 +28,10 @@ with open(TRAIN_PATH, "r", encoding="utf-8") as f:
 with open(TEST_INPUT_PATH, "r", encoding="utf-8") as f:
     test_data = json.load(f)["playlists"]
 
-# ─────────────────────────────────────────────
-# 2. VOCABULARIO DE TRACKS
-#    Mapeamos cada track_uri a un índice de columna entero.
-#    Solo usamos tracks vistos en train — los de test que
-#    no estén aquí no podrán puntuarse (son OOV).
-# ─────────────────────────────────────────────
+
+#    Mapeamos cada track_uri a un índice de columna enteiro.
+#    Solo usamos tracks vistos no train — os de test que no estén aquí non poderan
+#    puntuarse (son OOV).
 print("Construyendo vocabulario de tracks...")
 
 track_to_col = {}   # track_uri → índice columna
@@ -69,13 +48,12 @@ n_tracks    = len(track_to_col)
 print(f"  Playlists train : {n_playlists}")
 print(f"  Tracks únicos   : {n_tracks}")
 
-# ─────────────────────────────────────────────
-# 3. CONSTRUCCIÓN DE LA MATRIZ X (sparse)
-#    X[i, j] = 1  si la playlist i contiene el track j
-#    Usamos formato COO (coordenadas) de scipy para construirla
-#    y luego la convertimos a CSR para operaciones eficientes.
-# ─────────────────────────────────────────────
-print("Construyendo matriz X (playlists × tracks)...")
+
+# 3. CONSTRUCCIÓN DE LA MATRIZ (sparse)
+#    X[i, j] = 1  si a playlist i contén o track j
+#    logo convertese a CSR pra operacións eficientes.
+
+print("Construyendo matriz (playlists × tracks)...")
 
 rows, cols = [], []
 for row_idx, playlist in enumerate(train_data):
@@ -84,23 +62,20 @@ for row_idx, playlist in enumerate(train_data):
         rows.append(row_idx)
         cols.append(col_idx)
 
-# Valores binarios: 1.0 donde hay interacción
 data = np.ones(len(rows), dtype=np.float32)
 X_sparse = sp.csr_matrix((data, (rows, cols)), shape=(n_playlists, n_tracks))
 
 print(f"  Forma de X      : {X_sparse.shape}")
 print(f"  Densidad        : {X_sparse.nnz / (n_playlists * n_tracks):.6f}")
 
-# ─────────────────────────────────────────────
 # 4. CONVERSIÓN A tf.SparseTensor
-#    TensorFlow trabaja con SparseTensors para matrices dispersas.
-#    Necesitamos los índices en formato (fila, columna) y los valores.
-# ─────────────────────────────────────────────
+#    TensorFlow traballa con SparseTensors pra matrices dispersas.
+#    Necesitamos os índices en formato (fila, columna) e os valores.
 print("Convirtiendo a tf.SparseTensor...")
 
 X_coo = X_sparse.tocoo()  # COO: arrays separados de filas, cols, vals
 
-# Los índices deben ser int64 y estar en formato [[fila, col], ...]
+# os índices deben ser int64 e estar en formato [[fila, col], ...]
 X_indices = np.column_stack([X_coo.row, X_coo.col]).astype(np.int64)
 X_values  = X_coo.data.astype(np.float32)
 X_shape   = [n_playlists, n_tracks]
@@ -110,24 +85,19 @@ X_tf = tf.SparseTensor(
     values=X_values,
     dense_shape=X_shape
 )
-# tf.SparseTensor requiere que los índices estén ordenados lexicográficamente
+# tf.SparseTensor require que os índices estén ordeados lexicográficamente
 X_tf = tf.sparse.reorder(X_tf)
 
-# También necesitamos X como tensor denso para algunas operaciones del loss.
-# ADVERTENCIA: con datasets grandes esto sería inviable en memoria.
-# Para el trimmed (4347×1704) ocupa ~28MB en float32 → aceptable.
+# Tamén necesitamos X como tensor denso pra algunhas operacións do loss.
+# Pra o trimmed (4347×1704) ocupa ~28MB en float32 → aceptable.
 X_dense = tf.sparse.to_dense(X_tf)  # shape: (n_playlists, n_tracks)
 
-# ─────────────────────────────────────────────
-# 5. INICIALIZACIÓN DE S
-#    S es la matriz de coeficientes item-to-item que queremos aprender.
-#    La inicializamos con valores pequeños aleatorios.
-#    La restringimos a S ≥ 0 aplicando tf.nn.relu tras cada actualización.
-#    La diagonal se fuerza a 0 con una máscara.
-# ─────────────────────────────────────────────
+# S é a matriz de coeficientes item-to-item que queremos aprender.
+# inicializamos con valores pequenos aleatorios.
+# restrinximos a S ≥ 0 aplicando tf.nn.relu tras cada actualización.
+# a diagonal forzase a 0 cunha máscara.
 print("Inicializando S...")
 
-# Variable entrenables: los pesos de S (items × items)
 S = tf.Variable(
     tf.random.uniform([n_tracks, n_tracks], minval=0.0, maxval=0.01),
     trainable=True,
@@ -135,63 +105,48 @@ S = tf.Variable(
     dtype=tf.float32
 )
 
-# Máscara para forzar diag(S) = 0: es 1 en todos lados excepto en la diagonal
+# Máscara pra forzar diag(S) = 0: 1 en todos excepto na diagonal
 diag_mask = tf.ones([n_tracks, n_tracks]) - tf.eye(n_tracks)
 
 def apply_constraints(S_var):
-    """Aplica S ≥ 0 y diag(S) = 0 en cada paso.
-    
-    - relu: proyecta todos los valores negativos a 0  → S ≥ 0
-    - * diag_mask: anula los elementos de la diagonal → diag(S) = 0
-    
-    Esto es una proyección al espacio factible después de cada gradiente,
-    equivalente a projected gradient descent.
+    """Aplica S ≥ 0 e diag(S) = 0 en cada paso.
+
+    Esto é proxectar ao espazo factible despois de cada gradiente,
+    equivalente ao projected gradient descent.
     """
     return tf.nn.relu(S_var) * diag_mask
 
+# Queremos que X·S ≈ X, é dicir, que cada playlist
+# podase reconstruir coma combinación lineal de outras.
+#
+#  L1 (lasso) — penaliza o número de coeficientes != 0,
+#  forzando que S sea sparse. Canto maior λ, más sparse.
+#
+#  L2 (ridge) — penaliza coeficientes grandes,
+#  previndo sobreaxuste.
 # ─────────────────────────────────────────────
-# 6. FUNCIÓN DE PÉRDIDA (LOSS)
-#    La loss del enunciado es:
-#
-#       L(S) = ||X - X·S||²_F  +  λ·||S||_1  +  β·||S||²_F
-#
-#    Término 1: error de reconstrucción (Frobenius norm)
-#               Queremos que X·S ≈ X, es decir, que cada playlist
-#               pueda reconstruirse como combinación lineal de otras.
-#
-#    Término 2: L1 (lasso) — penaliza el número de coeficientes ≠ 0,
-#               forzando que S sea sparse. Cuanto mayor λ, más sparse.
-#
-#    Término 3: L2 (ridge) — penaliza coeficientes grandes,
-#               previniendo sobreajuste.
-# ─────────────────────────────────────────────
-@tf.function  # Compila el grafo para mayor velocidad
+@tf.function  # Compila o grafo para maior velocidade
 def compute_loss(S_constrained):
     # X·S: reconstrucción de X usando S  →  shape (n_playlists, n_tracks)
     XS = tf.matmul(X_dense, S_constrained)
 
-    # Error de reconstrucción: ||X - X·S||²_F
-    # tf.norm con ord='fro' es la norma de Frobenius: sqrt(sum de cuadrados)
-    # Elevamos al cuadrado para obtener la suma de cuadrados directamente.
+    # Erro de reconstrucción: ||X - X·S||2_F
+    # tf.norm con ord='fro' é a norma de Frobenius: sqrt(sum de cuadrados)
+    # Elevamos ao cadrado para obter a suma de cadrados
     reconstruction_loss = tf.reduce_sum(tf.square(X_dense - XS))
 
-    # Regularización L1: λ · ||S||_1  =  λ · sum(|s_ij|)
-    # Como S ≥ 0 por la restricción, |s_ij| = s_ij, pero usamos abs() por robustez
+    # Regularización L1
     l1_reg = LAMBDA * tf.reduce_sum(tf.abs(S_constrained))
 
-    # Regularización L2: β · ||S||²_F  =  β · sum(s_ij²)
+    # Regularización L2
     l2_reg = BETA * tf.reduce_sum(tf.square(S_constrained))
 
     return reconstruction_loss + l1_reg + l2_reg
 
-# ─────────────────────────────────────────────
-# 7. OPTIMIZADOR Y BUCLE DE ENTRENAMIENTO
-#    Usamos SGD como indica el enunciado.
-#    En cada paso:
-#      a) Calculamos gradientes con GradientTape (autodiff de TF)
-#      b) Aplicamos el gradiente sobre S
-#      c) Proyectamos S al espacio factible (relu + máscara diagonal)
-# ─────────────────────────────────────────────
+# Usamos SGD como indica el enunciado.
+# Calculamos gradientes con GradientTape (autodiff de TF)
+# Aplicamos o gradiente sobre S
+# Proxectamos S ao espacio factible (relu + máscara diagonal)
 optimizer = tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE)
 
 print(f"\nEntrenando SLIM ({EPOCHS} epochs)...")
@@ -200,20 +155,18 @@ print("-" * 50)
 
 for epoch in range(EPOCHS):
     with tf.GradientTape() as tape:
-        # Aplicar restricciones antes de calcular la loss
+        # Aplica restriccións antes de calcular a loss
         S_constrained = apply_constraints(S)
         loss = compute_loss(S_constrained)
 
-    # tf.GradientTape registra todas las operaciones dentro del bloque 'with'
-    # y calcula automáticamente dL/dS (diferenciación automática)
+    # tf.GradientTape rexistra todas as operacións dentro do bloque 'with'
+    # e calcula automáticamente dL/dS (diferenciación automática)
     gradients = tape.gradient(loss, [S])
 
-    # El optimizador aplica la actualización: S ← S - lr · dL/dS
+    # optimizador aplica a actualización: S ← S - lr · dL/dS
     optimizer.apply_gradients(zip(gradients, [S]))
 
     # Proyectar S al espacio factible (relu + diagonal = 0)
-    # Esto es necesario porque el gradiente puede haber llevado S
-    # fuera del espacio factible (valores negativos o diagonal ≠ 0)
     S.assign(apply_constraints(S))
 
     if (epoch + 1) % 20 == 0:
@@ -224,24 +177,20 @@ S_final = apply_constraints(S).numpy()  # shape: (n_tracks, n_tracks)
 print(f"\nEntrenamiento completado.")
 print(f"  S: {S_final.shape} | no-zeros: {np.count_nonzero(S_final)} | max: {S_final.max():.4f}")
 
-# ─────────────────────────────────────────────
-# 8. POPULARIDAD COMO FALLBACK
-#    Para playlists sin ningún seed track en vocabulario,
-#    recomendamos los tracks más populares del train.
-# ─────────────────────────────────────────────
+# POPULARIDADE COMO FALLBACK
+
 track_popularity = np.array(X_sparse.sum(axis=0)).flatten()  # apariciones por track
 popular_tracks = np.argsort(-track_popularity).tolist()       # orden descendente
 
-# ─────────────────────────────────────────────
-# 9. GENERACIÓN DE RECOMENDACIONES
-#    Para cada playlist de test:
-#      a) Construir su vector de interacciones x_i (1×n_tracks)
-#         usando solo los seed tracks que estén en el vocabulario.
-#      b) Calcular scores = x_i · S  →  puntuación para cada track
-#      c) Excluir tracks ya presentes en la playlist (no los repetimos)
-#      d) Ordenar por score descendente y tomar el top-500
-#      e) Si hay menos de 500, rellenar con popularidad
-# ─────────────────────────────────────────────
+
+#  Pra cada playlist de test:
+#  Construir vector interacciones x_i (1×n_tracks) usando sÓ os seed tracks que estén 
+#  no vocabulario.
+#  Calcular scores = x_i · S  →  puntuación track
+#  Excluir tracks xa presentes na playlist (no los repetimos)
+#  Ordea por score descendente e tomar o top-500
+#  Se menos de 500, encher con popularidade
+
 print("\nGenerando recomendaciones para playlists de test...")
 
 recommendations = []
@@ -249,7 +198,7 @@ recommendations = []
 for playlist in test_data:
     pid = playlist["pid"]
 
-    # Tracks seed de esta playlist que están en nuestro vocabulario
+    # Tracks seed desta playlist que están no noso vocabulario
     known_cols = []
     for track in playlist["tracks"]:
         uri = track["track_uri"]
@@ -257,28 +206,27 @@ for playlist in test_data:
             known_cols.append(track_to_col[uri])
 
     if len(known_cols) == 0:
-        # Sin seeds: fallback total por popularidad
+        # Sin seeds: fallback total por popularidade
         recs_cols = [c for c in popular_tracks if c not in set(known_cols)][:TOP_K]
     else:
-        # Vector de interacciones de esta playlist: shape (n_tracks,)
+        # Vector de interaccións de esta playlist: shape (n_tracks,)
         x_i = np.zeros(n_tracks, dtype=np.float32)
         for col in known_cols:
             x_i[col] = 1.0
 
         # Score para cada track: x_i · S
-        # S[j] es la j-ésima columna → cuánto contribuye el track j
+        # S[j] é a j-ésima columna → canto contribue no track j
         # a cada track candidato
         scores = x_i @ S_final  # shape: (n_tracks,)
 
-        # Excluir tracks ya conocidos (ponemos su score a -inf)
+        # Excluir tracks xa coñecidos (ponemos su score a -inf)
         known_set = set(known_cols)
         scores[list(known_set)] = -np.inf
 
         # Top-K por score descendente
         top_indices = np.argsort(-scores)[:TOP_K]
 
-        # Si hay huecos (tracks con score -inf que acabaron en top-K),
-        # rellenar con popularidad
+        # encher con popularidade
         recs_cols = [int(i) for i in top_indices if scores[i] > -np.inf]
 
         if len(recs_cols) < TOP_K:
@@ -286,7 +234,6 @@ for playlist in test_data:
                         if c not in known_set and c not in set(recs_cols)]
             recs_cols += fallback[:TOP_K - len(recs_cols)]
 
-    # Convertir índices de columna → track_uri
     recs_uris = [col_to_track[c] for c in recs_cols[:TOP_K]]
 
     recommendations.append({
@@ -294,9 +241,6 @@ for playlist in test_data:
         "recommendations": recs_uris
     })
 
-# ─────────────────────────────────────────────
-# 10. GUARDAR JSON DE SALIDA
-# ─────────────────────────────────────────────
 with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
     json.dump(recommendations, f, ensure_ascii=False, indent=2)
 
