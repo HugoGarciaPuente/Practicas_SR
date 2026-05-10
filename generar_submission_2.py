@@ -5,11 +5,12 @@ import json
 
 # Datos do equipo
 
-MEMBERS   = "Manuel David Barreiro Rodríguez, Carlos Hugo García Puente, Alejandro Varela Vázquez "   
-EMAILS    = "david.barreiro2@udc.es, c.hugo.gpuente@udc.es, alejandro.varela1@udc.es"
+MEMBERS   = "Manuel David Barreiro Rodríguez, Carlos Hugo García Puente, Alejandro Varela Vázquez"   
+EMAILS    = "david.barreiro2@udc.es, c.hugo.gpuente@udc.es, alejandro.varela.vazquez1@udc.es"
 
-INPUT_JSON  = "recommendations_per_playlist.json"
-OUTPUT_CSV  = "submission_2.csv"
+INPUT_JSON = "recommendations_fism.json"   
+#INPUT_JSON = "recommendations_slim.json"  
+OUTPUT_CSV  = "submission.csv"
 
 with open(INPUT_JSON, "r", encoding="utf-8") as f:
     recommendations = json.load(f)
@@ -17,12 +18,12 @@ with open(INPUT_JSON, "r", encoding="utf-8") as f:
 with open(OUTPUT_CSV, "w", encoding="utf-8") as f:
 
     # Liña de info do equipo
-    f.write(f"team_info,{MEMBERS},{EMAILS}\n")
+    f.write(f"{MEMBERS}, {EMAILS}\n")
     f.write("\n")
 
     # Unha fila por playlist
     for entry in recommendations:
-        pid  = entry["pid"]
+        pid = entry["pid"]
         uris = entry["recommendations"]
         # Extraemos só o ID final, eliminando o prefixo "spotify:track:"
         track_ids = [uri.split(":")[-1] for uri in uris]
