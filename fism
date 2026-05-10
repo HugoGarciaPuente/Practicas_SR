@@ -1,31 +1,13 @@
 """
 FISM — Factored Item Similarity Model para recomendación de playlists
-======================================================================
-FISM extiende SLIM descomponiendo la matriz S en dos matrices de menor rango:
+FISM extende SLIM descompoñendo a matriz S en dúas matrices de menos rango:
 
     S = P · Qᵀ   donde P, Q ∈ ℝ^(items × k)
 
-Esto reduce el número de parámetros de items² a 2·items·k,
-lo que permite escalar a datasets grandes y evita sobreajuste.
+Reduce o número de parámetros de items² a 2·items·k, o que permite escalar a datasets
+grandes e evitar sobreaxuste.
 
-La función de pérdida es análoga a SLIM:
-
-    min_{P,Q}  ||X - X·P·Qᵀ||²_F  +  λ·||P·Qᵀ||_1  +  β·||P·Qᵀ||²_F
-
-    s.t.  S = P·Qᵀ  con diag(S) = 0  (un item no se recomienda a sí mismo)
-
-Nota: la restricción S ≥ 0 se relaja en FISM porque la factorización
-con valores arbitrarios de P y Q ya no garantiza no-negatividad de forma
-natural. Aplicamos solo diag(S) = 0.
-
-Flujo:
-    1. Carga los JSONs del trimmed dataset (mismo preproceso que SLIM)
-    2. Construye vocabulario de tracks y matriz X sparse
-    3. Convierte X a tf.SparseTensor
-    4. Inicializa P y Q (variables entrenables)
-    5. Entrena con gradient descent + restricción diagonal
-    6. Genera recomendaciones para las playlists de test
-    7. Guarda un JSON compatible con evaluation_03.py
+usamos a mesma función de reconstrucción que SLIM, pero parametrizando S como PQ traspuesta.
 """
 
 import json
@@ -33,24 +15,21 @@ import numpy as np
 import scipy.sparse as sp
 import tensorflow as tf
 
-# ─────────────────────────────────────────────
-# HIPERPARÁMETROS
-# ─────────────────────────────────────────────
-K             = 5      # dimensión del espacio latente (rango de la factorización)
+# PARÁMETROS
+
+K             = 5      # dimensión do espazo latente (rango da factorización)
 LAMBDA        = 0.01    # peso L1
 BETA          = 0.01    # peso L2
-LEARNING_RATE = 0.005   # lr conservador: la multiplicación P·Qᵀ amplifica gradientes
+LEARNING_RATE = 0.005   # lr conservador: multiplicación P·Qᵀ amplifica gradientes
 EPOCHS        = 500
-GRAD_CLIP     = 5.0     # gradient clipping: evita NaN explosion en optimización bilineal
+GRAD_CLIP     = 5.0     # gradient clipping: evita explosion de NaN na optimización bilineal
 TOP_K         = 500
 
+#Rutas
 TRAIN_PATH      = "train_trimmed.json"
 TEST_INPUT_PATH = "test_input_trimmed.json"
 OUTPUT_JSON     = "recommendations_fism.json"
 
-# ─────────────────────────────────────────────
-# 1. CARGA DE DATOS (idéntico a SLIM)
-# ─────────────────────────────────────────────
 print("Cargando datos...")
 
 with open(TRAIN_PATH, "r", encoding="utf-8") as f:
@@ -59,9 +38,6 @@ with open(TRAIN_PATH, "r", encoding="utf-8") as f:
 with open(TEST_INPUT_PATH, "r", encoding="utf-8") as f:
     test_data = json.load(f)["playlists"]
 
-# ─────────────────────────────────────────────
-# 2. VOCABULARIO DE TRACKS
-# ─────────────────────────────────────────────
 print("Construyendo vocabulario de tracks...")
 
 track_to_col = {}
@@ -79,10 +55,7 @@ print(f"  Playlists train : {n_playlists}")
 print(f"  Tracks únicos   : {n_tracks}")
 print(f"  Dimensión latente k = {K}")
 
-# ─────────────────────────────────────────────
-# 3. CONSTRUCCIÓN DE LA MATRIZ X (sparse)
-# ─────────────────────────────────────────────
-print("Construyendo matriz X (playlists × tracks)...")
+print("Construyendo matriz (playlists × tracks)...")
 
 rows, cols = [], []
 for row_idx, playlist in enumerate(train_data):
@@ -97,9 +70,6 @@ X_sparse = sp.csr_matrix((data, (rows, cols)), shape=(n_playlists, n_tracks))
 print(f"  Forma de X      : {X_sparse.shape}")
 print(f"  Densidad        : {X_sparse.nnz / (n_playlists * n_tracks):.6f}")
 
-# ─────────────────────────────────────────────
-# 4. CONVERSIÓN A tf.SparseTensor + DENSO
-# ─────────────────────────────────────────────
 print("Convirtiendo a tf.SparseTensor...")
 
 X_coo     = X_sparse.tocoo()
@@ -112,16 +82,12 @@ X_tf = tf.sparse.reorder(X_tf)
 
 X_dense = tf.sparse.to_dense(X_tf)  # (n_playlists, n_tracks)
 
-# ─────────────────────────────────────────────
-# 5. INICIALIZACIÓN DE P Y Q
-#    SLIM aprende S directamente (items × items).
-#    FISM lo factoriza: S ≈ P · Qᵀ
-#      P: matrix de "emisión"  — cómo cada item proyecta al espacio latente
-#      Q: matriz de "recepción" — cómo cada item recibe del espacio latente
+#INICIALIZACIÓN DE P Y Q
+#    FISM  factoriza: S ≈ P · Qᵀ
+#      P: matriz de "emisión"  — cómo cada item proxecta ao espazo latente
+#      Q: matriz de "recepción" — cómo cada item recibe do espazo latente
 #
-#    Inicialización con escala pequeña: evitamos que XS empiece
-#    siendo enorme y cause gradientes explosivos.
-# ─────────────────────────────────────────────
+#    Inicialización con escala pequeña.
 print("Inicializando P y Q...")
 
 init_scale = 0.01 / np.sqrt(K)  # escala inversamente proporcional a k
@@ -146,29 +112,19 @@ diag_mask = tf.ones([n_tracks, n_tracks]) - tf.eye(n_tracks)
 
 def compute_S(P_var, Q_var):
     """Reconstruye S = P·Qᵀ con diag(S) = 0.
-    
-    La multiplicación P·Qᵀ es la clave de FISM:
-    - Cada fila de P es el vector latente 'emisor' de un item
-    - Cada fila de Q es el vector latente 'receptor' de un item
-    - S[i,j] = P[i] · Q[j]  →  similitud entre item i e item j
-    
-    A diferencia de SLIM (que aprende directamente n_tracks² pesos),
+    - Cada fila de P é o vector latente 'emisor' dun item
+    - Cada fila de Q é o vector latente 'receptor' dun item
+    - S[i,j] = P[i] · Q[j]  →  similitud item i e item j
+
     FISM solo aprende 2 × n_tracks × k parámetros:
-      SLIM:  1704² = 2.903.616 parámetros
-      FISM:  2 × 1704 × 20 = 68.160 parámetros  (con k=20)
+    FISM:  2 × 1704 × 20 = 68.160 parámetros  (con k=20)
     """
     S = tf.matmul(P_var, Q_var, transpose_b=True)  # (n_tracks, n_tracks)
     return S * diag_mask  # diag(S) = 0
 
-# ─────────────────────────────────────────────
-# 6. FUNCIÓN DE PÉRDIDA
-#    Igual que SLIM pero sobre S = P·Qᵀ
-#
-#    L(P,Q) = ||X - X·S||²_F  +  λ·||S||_1  +  β·||S||²_F
-#
-#    El gradiente fluye a través de S hacia P y Q
-#    gracias a la diferenciación automática de TensorFlow.
-# ─────────────────────────────────────────────
+#    FUNCIÓN DE PÉRDIDA
+#    Igual ca SLIM pero sobre S = P·Qᵀ
+
 @tf.function
 def compute_loss(P_var, Q_var):
     S = compute_S(P_var, Q_var)
@@ -176,24 +132,22 @@ def compute_loss(P_var, Q_var):
     # Reconstrucción: X·S  →  (n_playlists, n_tracks)
     XS = tf.matmul(X_dense, S)
 
-    # Error de reconstrucción: ||X - X·S||²_F
+    # Erro de reconstrucción: ||X - X·S||²_F
     reconstruction_loss = tf.reduce_sum(tf.square(X_dense - XS))
 
-    # L1: λ · ||S||_1  — suma de valores absolutos de todos los elementos
+    # L1: λ · ||S||_1  — suma de valores absolutos de todos os elementos
     l1_reg = LAMBDA * tf.reduce_sum(tf.abs(S))
 
-    # L2: β · ||S||²_F  — suma de cuadrados de todos los elementos
+    # L2: β · ||S||²_F  — suma de cadrados de todos os elementos
     l2_reg = BETA * tf.reduce_sum(tf.square(S))
 
     return reconstruction_loss + l1_reg + l2_reg
 
-# ─────────────────────────────────────────────
-# 7. BUCLE DE ENTRENAMIENTO
-#    GradientTape calcula dL/dP y dL/dQ simultáneamente.
-#    El optimizador actualiza P y Q en paralelo.
-#    No hay proyección post-gradiente porque no tenemos
-#    la restricción S ≥ 0 en FISM.
-# ─────────────────────────────────────────────
+# BUCLE DE ENTRENAMIENTO
+# GradientTape calcula dL/dP y dL/dQ simultáneamente.
+# O optimizador actualiza P y Q en paralelo.
+# nesta implementación non se impón non negatividade explícita   
+
 optimizer = tf.keras.optimizers.SGD(learning_rate=LEARNING_RATE)
 
 print(f"\nEntrenando FISM ({EPOCHS} epochs)...")
@@ -202,15 +156,15 @@ print("-" * 50)
 
 for epoch in range(EPOCHS):
     with tf.GradientTape() as tape:
-        # tape registra las operaciones sobre P y Q (ambas son tf.Variable)
+        # tape rexistra as operaciones sobre P e Q (ambas son tf.Variable)
         loss = compute_loss(P, Q)
 
-    # Gradientes respecto a P y Q
+    # Gradientes respecto a P e Q
     gradients = tape.gradient(loss, [P, Q])
 
-    # Gradient clipping: limita la norma de cada gradiente a GRAD_CLIP.
-    # En optimización bilineal (P·Qᵀ), los gradientes se amplifican
-    # mutuamente y pueden explotar (→ NaN). El clipping los estabiliza.
+    # Gradient clipping: limita a norma de cada gradiente a GRAD_CLIP.
+    # En optimización bilineal (P·Qᵀ), os gradientes se amplifican
+    # mutuamente e poden explotar (→ NaN). O clipping estabilizaos.
     gradients, _ = tf.clip_by_global_norm(gradients, GRAD_CLIP)
 
     # Actualización: P ← P - lr·dL/dP,  Q ← Q - lr·dL/dQ
@@ -219,25 +173,19 @@ for epoch in range(EPOCHS):
     if (epoch + 1) % 20 == 0:
         print(f"  Epoch {epoch+1:>4}/{EPOCHS}  |  Loss: {loss.numpy():.6f}")
 
-# Reconstruir S final desde P y Q entrenados
+# Reconstruir S final dende P e Q entrenados
 S_final = compute_S(P, Q).numpy()  # shape: (n_tracks, n_tracks)
 print(f"\nEntrenamiento completado.")
 print(f"  S = P·Qᵀ: {S_final.shape} | max: {S_final.max():.4f} | min: {S_final.min():.4f}")
 
-# ─────────────────────────────────────────────
-# 8. POPULARIDAD COMO FALLBACK
-# ─────────────────────────────────────────────
+# POPULARIDAD COMO FALLBACK
 track_popularity = np.array(X_sparse.sum(axis=0)).flatten()
 popular_tracks   = np.argsort(-track_popularity).tolist()
 
-# ─────────────────────────────────────────────
-# 9. GENERACIÓN DE RECOMENDACIONES
-#    Idéntico a SLIM: scores = x_i · S
-#    La diferencia es que S viene de P·Qᵀ en lugar de
-#    haberse aprendido directamente.
-# ─────────────────────────────────────────────
-print("\nGenerando recomendaciones para playlists de test...")
 
+print("\nGenerando recomendaciones para playlists de test...")
+#    Idéntico a SLIM: scores = x_i · S
+#    La diferencia es que S viene de P·Qᵀ 
 recommendations = []
 
 for playlist in test_data:
@@ -258,7 +206,7 @@ for playlist in test_data:
             x_i[col] = 1.0
 
         # scores = x_i · S = x_i · P·Qᵀ
-        # Podemos calcularlo eficientemente como (x_i·P)·Qᵀ
+        # Podemos calcular eficientemente como (x_i·P)·Qᵀ
         # evitando materializar S completa (útil para datasets grandes)
         #   latent = x_i @ P  →  shape (k,)
         #   scores = latent @ Q.T  →  shape (n_tracks,)
@@ -283,9 +231,6 @@ for playlist in test_data:
         "recommendations": recs_uris
     })
 
-# ─────────────────────────────────────────────
-# 10. GUARDAR JSON DE SALIDA
-# ─────────────────────────────────────────────
 with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
     json.dump(recommendations, f, ensure_ascii=False, indent=2)
 
