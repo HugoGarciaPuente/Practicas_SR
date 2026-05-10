@@ -46,12 +46,13 @@ def recommended_songs_clicks(ranking, relevant_tracks, k=10, max_clicks=50):
 
     return max_clicks + 1  # 51
 
-
+# Empregamos o fichero trimmed por tempo de cálculo
 EVAL_PATH       = "test_eval_trimmed.json"
 
 with open(EVAL_PATH, "r", encoding="utf-8") as f:
     eval_playlists = json.load(f)["playlists"]
-
+    
+#get track do pid
 pid_to_gt = {
     pl["pid"]: {t["track_uri"] for t in pl["tracks"]}
     for pl in eval_playlists
